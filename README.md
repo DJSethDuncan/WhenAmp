@@ -30,10 +30,14 @@ See `AGENTS.md` for the test-coverage expectations for new features.
 ## Playlist
 
 Click PL to open the playlist as a separate window (a real OS window via
-egui's multi-viewport support, not embedded). It starts docked to the right
-edge of the player and follows it around; dragging the playlist's own
-titlebar undocks it, and the small circle button on its titlebar toggles
-docked/undocked directly.
+egui's multi-viewport support, not embedded). It can dock to any of the
+player's four edges; opening it always starts docked, at wherever it was
+last docked (bottom, by default, the first time). While docked it's
+repositioned every frame to stay flush against that edge, so it moves with
+the player as if attached. Dragging the playlist's own titlebar undocks it
+immediately so it can move freely; drag it back within ~28px of any player
+edge and it snaps into place, docking to that edge. The small circle button
+on its titlebar toggles docked/undocked directly, without needing a drag.
 
 - Drop audio files on the **player** window to queue them right after the
   current track and start playing the first one immediately.

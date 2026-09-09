@@ -50,7 +50,9 @@ struct WhenAmpApp {
     micro_mode: bool,
     playlist: Playlist,
     playlist_open: bool,
+    playlist_was_open: bool,
     playlist_docked: bool,
+    playlist_dock_side: DockSide,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -392,6 +394,64 @@ enum Direction {
     Next,
 }
 
+/// Which edge of the main player window the playlist window is docked to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DockSide {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+const DOCK_GAP: f32 = 6.0;
+const DOCK_SNAP_DISTANCE: f32 = 28.0;
+
+/// Where a docked playlist window should sit, flush against `side` of
+/// `main_rect`, given the playlist window's own current size.
+fn dock_position(main_rect: Rect, playlist_size: Vec2, side: DockSide) -> egui::Pos2 {
+    match side {
+        DockSide::Right => egui::pos2(main_rect.right() + DOCK_GAP, main_rect.top()),
+        DockSide::Left => egui::pos2(
+            main_rect.left() - playlist_size.x - DOCK_GAP,
+            main_rect.top(),
+        ),
+        DockSide::Bottom => egui::pos2(main_rect.left(), main_rect.bottom() + DOCK_GAP),
+        DockSide::Top => egui::pos2(
+            main_rect.left(),
+            main_rect.top() - playlist_size.y - DOCK_GAP,
+        ),
+    }
+}
+
+/// If `playlist_rect` is close enough to any edge of `main_rect`, returns
+/// that side — used to snap an undocked playlist window back into place
+/// while it's being dragged near the player.
+fn nearest_dock_side(main_rect: Rect, playlist_rect: Rect) -> Option<DockSide> {
+    let candidates = [
+        (
+            DockSide::Right,
+            (playlist_rect.left() - main_rect.right()).abs(),
+        ),
+        (
+            DockSide::Left,
+            (playlist_rect.right() - main_rect.left()).abs(),
+        ),
+        (
+            DockSide::Bottom,
+            (playlist_rect.top() - main_rect.bottom()).abs(),
+        ),
+        (
+            DockSide::Top,
+            (playlist_rect.bottom() - main_rect.top()).abs(),
+        ),
+    ];
+    candidates
+        .into_iter()
+        .filter(|(_, dist)| *dist <= DOCK_SNAP_DISTANCE)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(side, _)| side)
+}
+
 /// Prev/Next: walks the playlist if one exists, otherwise falls back to
 /// restarting the current track (there's nothing to skip to without a
 /// queue).
@@ -695,7 +755,9 @@ impl WhenAmpApp {
             micro_mode: false,
             playlist: Playlist::new(),
             playlist_open: false,
+            playlist_was_open: false,
             playlist_docked: true,
+            playlist_dock_side: DockSide::Bottom,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -1401,25 +1463,36 @@ impl eframe::App for WhenAmpApp {
                     .send_viewport_cmd(egui::ViewportCommand::InnerSize(desired_size));
             }
 
+            // Reopening always starts docked, at wherever it was last docked.
+            if self.playlist_open && !self.playlist_was_open {
+                self.playlist_docked = true;
+            }
+            self.playlist_was_open = self.playlist_open;
+
             if self.playlist_open {
+                const DEFAULT_PLAYLIST_SIZE: Vec2 = Vec2::new(260.0, 320.0);
                 let main_rect = ui.ctx().input(|i| i.viewport().outer_rect);
-                let dock_target = main_rect.map(|rect| egui::pos2(rect.right() + 6.0, rect.top()));
 
                 let mut builder = egui::ViewportBuilder::default()
                     .with_title("WhenAmp Playlist")
-                    .with_inner_size([260.0, 320.0])
+                    .with_inner_size(DEFAULT_PLAYLIST_SIZE)
                     .with_min_inner_size([200.0, 160.0])
                     .with_resizable(true)
                     .with_decorations(false)
                     .with_transparent(true);
                 if self.playlist_docked {
-                    if let Some(pos) = dock_target {
-                        builder = builder.with_position(pos);
+                    if let Some(rect) = main_rect {
+                        builder = builder.with_position(dock_position(
+                            rect,
+                            DEFAULT_PLAYLIST_SIZE,
+                            self.playlist_dock_side,
+                        ));
                     }
                 }
 
                 let playlist = &mut self.playlist;
                 let playlist_docked = &mut self.playlist_docked;
+                let playlist_dock_side = &mut self.playlist_dock_side;
                 let playlist_open = &mut self.playlist_open;
                 let status = &mut self.status;
                 let is_playing = &mut self.is_playing;
@@ -1428,10 +1501,24 @@ impl eframe::App for WhenAmpApp {
                     egui::ViewportId::from_hash_of("whenamp-playlist"),
                     builder,
                     |ui, _class| {
-                        if *playlist_docked {
-                            if let Some(pos) = dock_target {
-                                ui.ctx()
-                                    .send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                        if let Some(main_rect) = main_rect {
+                            let own_rect = ui.ctx().input(|i| i.viewport().outer_rect);
+                            if *playlist_docked {
+                                if let Some(own_rect) = own_rect {
+                                    let pos = dock_position(
+                                        main_rect,
+                                        own_rect.size(),
+                                        *playlist_dock_side,
+                                    );
+                                    ui.ctx().send_viewport_cmd(
+                                        egui::ViewportCommand::OuterPosition(pos),
+                                    );
+                                }
+                            } else if let Some(own_rect) = own_rect {
+                                if let Some(side) = nearest_dock_side(main_rect, own_rect) {
+                                    *playlist_docked = true;
+                                    *playlist_dock_side = side;
+                                }
                             }
                         }
 
