@@ -14,7 +14,6 @@ const TITLE_BAR_BG: Color32 = Color32::from_rgb(0x3c, 0x40, 0x49);
 const INK: Color32 = Color32::from_rgb(0xcf, 0xd4, 0xdd);
 const LABEL_GRAY: Color32 = Color32::from_rgb(0xc9, 0xce, 0xd8);
 const DIM_GRAY: Color32 = Color32::from_rgb(0x8d, 0x93, 0x9e);
-const STATUS_GRAY: Color32 = Color32::from_rgb(0x56, 0x5b, 0x64);
 const INACTIVE: Color32 = Color32::from_rgb(0x7b, 0x80, 0x89);
 const CLOSE_RED: Color32 = Color32::from_rgb(0xe0, 0xb3, 0xb3);
 const LCD_GREEN: Color32 = Color32::from_rgb(0x4e, 0xe3, 0x9a);
@@ -39,13 +38,13 @@ struct WhenAmpApp {
     title_marquee_started_at: f64,
     remaining_mode: bool,
     viz_bars: [f32; VISUALIZER_BARS],
-    balance: f32,
     eq_on: bool,
     pl_on: bool,
     shuffle_on: bool,
     repeat_on: bool,
     is_playing: bool,
     last_window_size: Option<Vec2>,
+    compact_mode: bool,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -140,7 +139,7 @@ fn bevel_rect(ui: &Ui, rect: Rect, fill: Color32, raised: bool) {
 /// Returns the response (drag it) plus the value implied by the current
 /// pointer position while being dragged.
 fn bevel_slider(ui: &mut Ui, size: Vec2, value: f32, fill: Color32) -> (Response, Option<f32>) {
-    let (rect, response) = ui.allocate_exact_size(size, Sense::drag());
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     bevel_rect(ui, rect, TRACK_BG, false);
 
     let value = value.clamp(0.0, 1.0);
@@ -207,10 +206,17 @@ enum Icon {
     Next,
 }
 
+const DEFAULT_ICON_BUTTON_SIZE: Vec2 = Vec2::new(36.0, 28.0);
+
 /// A square toolbar button in the chassis chrome, drawing its own vector
 /// icon (no font glyph dependency).
 fn icon_button(ui: &mut Ui, icon: Icon) -> Response {
-    let size = Vec2::new(36.0, 28.0);
+    icon_button_sized(ui, icon, DEFAULT_ICON_BUTTON_SIZE)
+}
+
+/// Same as [`icon_button`] but at a caller-chosen size (e.g. the compact
+/// mini-player's smaller transport buttons).
+fn icon_button_sized(ui: &mut Ui, icon: Icon, size: Vec2) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
 
     if ui.is_rect_visible(rect) {
@@ -221,7 +227,7 @@ fn icon_button(ui: &mut Ui, icon: Icon) -> Response {
         let play_color = if ui.is_enabled() { LCD_GREEN } else { INACTIVE };
         let painter = ui.painter();
         let center = rect.center();
-        let s = 11.0_f32;
+        let s = size.y.min(size.x) * 0.4;
 
         match icon {
             Icon::Play => {
@@ -300,7 +306,7 @@ fn toggle_label_button(ui: &mut Ui, label: &str, active: bool, width: f32) -> Re
         let galley = ui
             .painter()
             .layout_no_wrap(label.to_owned(), silkscreen_font(9.0), color);
-        let pos = rect.center() - galley.size() / 2.0;
+        let pos = (rect.center() - galley.size() / 2.0).round();
         ui.painter().galley(pos, galley, color);
     }
     response
@@ -385,13 +391,13 @@ impl WhenAmpApp {
             title_marquee_started_at: 0.0,
             remaining_mode: false,
             viz_bars: [0.0; VISUALIZER_BARS],
-            balance: 0.5,
             eq_on: true,
             pl_on: false,
             shuffle_on: false,
             repeat_on: false,
             is_playing: false,
             last_window_size: None,
+            compact_mode: false,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -487,6 +493,121 @@ impl eframe::App for WhenAmpApp {
             let chassis_response = chassis_frame.show(ui, |ui| {
                     ui.set_width(CHASSIS_WIDTH);
 
+                    if self.compact_mode {
+                        let row_size = Vec2::new(CHASSIS_WIDTH, 40.0);
+                        let (row_rect, row_drag) =
+                            ui.allocate_exact_size(row_size, Sense::click_and_drag());
+                        if row_drag.drag_started() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+                        ui.painter().rect_filled(row_rect, 0.0, TITLE_BAR_BG);
+
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(row_rect.shrink2(Vec2::new(6.0, 4.0))),
+                            |ui| {
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        let (restore_rect, restore_resp) = ui.allocate_exact_size(
+                                            Vec2::new(16.0, 14.0),
+                                            Sense::click(),
+                                        );
+                                        bevel_rect(ui, restore_rect, FACE, true);
+                                        let inner = restore_rect.shrink(4.0);
+                                        ui.painter().rect_stroke(
+                                            inner,
+                                            0.0,
+                                            Stroke::new(1.0, INK),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                        if restore_resp.on_hover_text("Restore").clicked() {
+                                            self.compact_mode = false;
+                                        }
+
+                                        ui.add_space(3.0);
+                                        let (close_rect, close_resp) = ui.allocate_exact_size(
+                                            Vec2::new(16.0, 14.0),
+                                            Sense::click(),
+                                        );
+                                        bevel_rect(
+                                            ui,
+                                            close_rect,
+                                            FACE,
+                                            !close_resp.is_pointer_button_down_on(),
+                                        );
+                                        let c = close_rect.center();
+                                        ui.painter().line_segment(
+                                            [c + Vec2::new(-3.0, -3.0), c + Vec2::new(3.0, 3.0)],
+                                            Stroke::new(1.0, CLOSE_RED),
+                                        );
+                                        ui.painter().line_segment(
+                                            [c + Vec2::new(-3.0, 3.0), c + Vec2::new(3.0, -3.0)],
+                                            Stroke::new(1.0, CLOSE_RED),
+                                        );
+                                        if close_resp.clicked() {
+                                            ui.ctx()
+                                                .send_viewport_cmd(egui::ViewportCommand::Close);
+                                        }
+
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            egui::RichText::new(lcd_text.clone())
+                                                .font(lcd_font(18.0))
+                                                .color(LCD_GREEN),
+                                        );
+
+                                        ui.add_space(8.0);
+                                        let btn_size = Vec2::new(22.0, 22.0);
+                                        ui.add_enabled_ui(has_song, |ui| {
+                                            if icon_button_sized(ui, Icon::Play, btn_size)
+                                                .on_hover_text("Play")
+                                                .clicked()
+                                            {
+                                                player.play();
+                                                self.is_playing = true;
+                                            }
+                                            if icon_button_sized(ui, Icon::Pause, btn_size)
+                                                .on_hover_text("Pause")
+                                                .clicked()
+                                            {
+                                                player.pause();
+                                                self.is_playing = false;
+                                            }
+                                            if icon_button_sized(ui, Icon::Stop, btn_size)
+                                                .on_hover_text("Stop")
+                                                .clicked()
+                                            {
+                                                player.stop();
+                                                self.is_playing = false;
+                                            }
+                                        });
+
+                                        ui.add_space(8.0);
+                                        let spectrum_width = 90.0;
+                                        let ticker_width =
+                                            (ui.available_width() - spectrum_width - 8.0).max(40.0);
+                                        marquee_label(
+                                            ui,
+                                            &title_text,
+                                            ticker_width,
+                                            LCD_GREEN,
+                                            self.title_marquee_started_at,
+                                        );
+
+                                        ui.add_space(8.0);
+                                        visualizer(
+                                            ui,
+                                            Vec2::new(spectrum_width, 24.0),
+                                            &self.viz_bars,
+                                        );
+                                    },
+                                );
+                            },
+                        );
+                        return;
+                    }
+
                     // Title strip. Doubles as the window's drag handle, since
                     // decorations are off and this is the only chrome we have.
                     let (title_rect, title_drag) = ui.allocate_exact_size(
@@ -552,7 +673,7 @@ impl eframe::App for WhenAmpApp {
                                     }
 
                                     ui.add_space(3.0);
-                                    let (sq_rect, _) = ui
+                                    let (sq_rect, sq_resp) = ui
                                         .allocate_exact_size(Vec2::new(16.0, 14.0), Sense::click());
                                     bevel_rect(ui, sq_rect, FACE, true);
                                     let inner = sq_rect.shrink(4.0);
@@ -562,9 +683,12 @@ impl eframe::App for WhenAmpApp {
                                         Stroke::new(1.0, INK),
                                         egui::StrokeKind::Inside,
                                     );
+                                    if sq_resp.on_hover_text("Mini player").clicked() {
+                                        self.compact_mode = !self.compact_mode;
+                                    }
 
                                     ui.add_space(3.0);
-                                    let (dash_rect, _) = ui
+                                    let (dash_rect, dash_resp) = ui
                                         .allocate_exact_size(Vec2::new(16.0, 14.0), Sense::click());
                                     bevel_rect(ui, dash_rect, FACE, true);
                                     let dash = Rect::from_center_size(
@@ -572,6 +696,10 @@ impl eframe::App for WhenAmpApp {
                                         Vec2::new(8.0, 2.0),
                                     );
                                     ui.painter().rect_filled(dash, 0.0, INK);
+                                    if dash_resp.on_hover_text("Minimize").clicked() {
+                                        ui.ctx()
+                                            .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                                    }
                                 });
                             });
                         },
@@ -637,7 +765,7 @@ impl eframe::App for WhenAmpApp {
                                                     .unwrap_or_else(|| "-- KHZ".to_string());
 
                                                 let (kbps_rect, _) = ui.allocate_exact_size(
-                                                    Vec2::new(52.0, 14.0),
+                                                    Vec2::new(66.0, 14.0),
                                                     Sense::hover(),
                                                 );
                                                 ui.painter().rect_filled(kbps_rect, 0.0, LCD_GREEN);
@@ -646,11 +774,9 @@ impl eframe::App for WhenAmpApp {
                                                     silkscreen_font(9.0),
                                                     LCD_PANEL_BG,
                                                 );
-                                                ui.painter().galley(
-                                                    kbps_rect.center() - g.size() / 2.0,
-                                                    g,
-                                                    LCD_PANEL_BG,
-                                                );
+                                                let pos = (kbps_rect.center() - g.size() / 2.0)
+                                                    .round();
+                                                ui.painter().galley(pos, g, LCD_PANEL_BG);
 
                                                 ui.add_space(4.0);
                                                 let (khz_rect, _) = ui.allocate_exact_size(
@@ -668,11 +794,9 @@ impl eframe::App for WhenAmpApp {
                                                     silkscreen_font(9.0),
                                                     LCD_GREEN,
                                                 );
-                                                ui.painter().galley(
-                                                    khz_rect.center() - g.size() / 2.0,
-                                                    g,
-                                                    LCD_GREEN,
-                                                );
+                                                let pos =
+                                                    (khz_rect.center() - g.size() / 2.0).round();
+                                                ui.painter().galley(pos, g, LCD_GREEN);
 
                                                 ui.add_space(4.0);
                                                 let stereo_on = info.channels.unwrap_or(1) >= 2;
@@ -695,11 +819,9 @@ impl eframe::App for WhenAmpApp {
                                                     silkscreen_font(9.0),
                                                     LCD_PANEL_BG,
                                                 );
-                                                ui.painter().galley(
-                                                    st_rect.center() - g.size() / 2.0,
-                                                    g,
-                                                    LCD_PANEL_BG,
-                                                );
+                                                let pos =
+                                                    (st_rect.center() - g.size() / 2.0).round();
+                                                ui.painter().galley(pos, g, LCD_PANEL_BG);
                                             });
                                         });
 
@@ -750,14 +872,18 @@ impl eframe::App for WhenAmpApp {
                                         .font(silkscreen_font(8.0))
                                         .color(DIM_GRAY),
                                 );
-                                let (_resp, drag) = bevel_slider(
+                                let bal = player.balance();
+                                let (bal_resp, drag) = bevel_slider(
                                     ui,
                                     Vec2::new(90.0, 6.0),
-                                    self.balance,
+                                    bal,
                                     LCD_GREEN,
                                 );
                                 if let Some(v) = drag {
-                                    self.balance = v;
+                                    player.set_balance(v);
+                                }
+                                if bal_resp.double_clicked() {
+                                    player.set_balance(0.5);
                                 }
 
                                 ui.add_space(6.0);
@@ -883,23 +1009,7 @@ impl eframe::App for WhenAmpApp {
                         });
                     });
 
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.set_width(CHASSIS_WIDTH - 16.0);
-                        ui.label(
-                            egui::RichText::new("SPACE = PLAY/PAUSE  ·  EJECT LOADS A LOCAL FILE")
-                                .font(silkscreen_font(8.0))
-                                .color(STATUS_GRAY),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(if has_song { "LOCAL FILE" } else { "NO FILE" })
-                                    .font(silkscreen_font(8.0))
-                                    .color(STATUS_GRAY),
-                            );
-                        });
-                    });
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                 });
 
             // Snap the (undecorated, non-resizable) window to exactly fit the

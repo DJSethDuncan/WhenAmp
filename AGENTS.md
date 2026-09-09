@@ -12,11 +12,20 @@ Before considering a change done:
   touching `Player`, which opens a real audio output device, follow the
   `test_player()` pattern: skip (don't fail) the test when no device is
   available, so the suite stays green on headless CI.
-- Run `cargo test` locally and confirm it passes before committing. The
-  pre-commit hook (`.githooks/pre-commit`) also runs it automatically.
 
 Do not merge or commit a feature with no corresponding test unless it's
 purely a UI layout tweak with no new logic to verify.
+
+## Don't run the test suite yourself
+
+Write and reason about tests, but don't run `cargo test` as a general
+validation step — that's the pre-commit hook's job (`.githooks/pre-commit`
+runs it automatically on every commit, see below), and re-running the whole
+suite after every edit burns tokens for no benefit over letting the hook
+catch it at commit time. `cargo build` for a compile check is fine. The one
+exception: actively debugging a specific failing test (e.g. `cargo test
+some_test_name`) to diagnose root cause — that's targeted investigation,
+not blanket validation.
 
 ## Setup note
 

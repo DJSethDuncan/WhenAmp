@@ -30,18 +30,19 @@ See `AGENTS.md` for the test-coverage expectations for new features.
 ## Design
 
 The UI chrome ("SONIC DECK" graphite skin) is ported from a Claude Design
-mockup. Volume and Repeat are wired to real playback; Balance, EQ, PL, and
-Shuffle are visual toggles carried over from the mockup with no playlist or
-audio-panning behavior behind them yet (no playlist exists to shuffle, and
-stereo balance would need a custom per-channel gain source). Prev/Next
-restart the current track, matching the mockup's own single-file fallback
-behavior. The visualizer is a real-time FFT spectrum analyzer (bass on the
-left, treble on the right), fed by a mono downmix tap on the decoded audio
-stream.
+mockup. Volume, Balance (double-click to re-center), and Repeat are wired
+to real playback; EQ, PL, and Shuffle remain visual toggles carried over
+from the mockup with no backing behavior (no playlist exists to shuffle or
+equalize). Prev/Next restart the current track, matching the mockup's own
+single-file fallback behavior. The visualizer is a real-time FFT spectrum
+analyzer (bass on the left, treble on the right), fed by a mono downmix tap
+on the decoded audio stream.
 
 The window is undecorated (no native title bar) and sized to exactly fit
-the chassis; the in-app title strip is the drag handle, and its "x" button
-is the only way to close the window.
+the chassis; the in-app title strip is the drag handle. Its three window
+controls: the square button toggles a compact single-row mini-player
+(time, transport, ticker, spectrum — capped at 50px tall, same width as
+the full window), the dash minimizes, and the "x" closes.
 
 ## Fonts
 

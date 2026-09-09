@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,6 +20,8 @@ pub const VISUALIZER_BARS: usize = 28;
 /// Samples per FFT window (power of two). At 44.1kHz this is ~23ms of audio.
 const FFT_SIZE: usize = 1024;
 const DEFAULT_VOLUME: f32 = 0.78;
+/// 0.0 = full left, 0.5 = center, 1.0 = full right.
+const DEFAULT_BALANCE: f32 = 0.5;
 
 /// Metadata about the currently loaded track beyond title/duration.
 #[derive(Clone, Copy, Default)]
@@ -36,6 +39,7 @@ pub struct Player {
     track_title: Option<String>,
     track_info: TrackInfo,
     volume: f32,
+    balance: Arc<AtomicU32>,
     sample_buffer: Arc<Mutex<VecDeque<f32>>>,
     visualizer_sample_rate: u32,
     visualizer_bars: [f32; VISUALIZER_BARS],
@@ -57,6 +61,7 @@ impl Player {
             track_title: None,
             track_info: TrackInfo::default(),
             volume: DEFAULT_VOLUME,
+            balance: Arc::new(AtomicU32::new(DEFAULT_BALANCE.to_bits())),
             sample_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(FFT_SIZE))),
             visualizer_sample_rate: 0,
             visualizer_bars: [0.0; VISUALIZER_BARS],
@@ -110,6 +115,18 @@ impl Player {
         if let Some(player) = &self.player {
             player.set_volume(self.volume);
         }
+    }
+
+    /// 0.0 = full left, 0.5 = center, 1.0 = full right. Applied live to
+    /// whatever's currently playing (and to whatever loads next), no reload
+    /// required.
+    pub fn balance(&self) -> f32 {
+        f32::from_bits(self.balance.load(Ordering::Relaxed))
+    }
+
+    pub fn set_balance(&mut self, balance: f32) {
+        self.balance
+            .store(balance.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     /// A snapshot of the 28 visualizer bars (0.0..=1.0), bass on the left
@@ -170,8 +187,13 @@ impl Player {
     }
 
     pub fn load(&mut self, path: PathBuf) -> anyhow::Result<()> {
-        let file = BufReader::new(File::open(&path)?);
-        let source = Decoder::new(file)?;
+        let file = File::open(&path)?;
+        let byte_len = file.metadata()?.len();
+        let source = Decoder::builder()
+            .with_data(BufReader::new(file))
+            .with_byte_len(byte_len)
+            .with_seekable(true)
+            .build()?;
         let duration = source.total_duration();
         let sample_rate = source.sample_rate();
         let channels = source.channels();
@@ -191,9 +213,15 @@ impl Player {
             frame_acc: 0.0,
             frame_pos: 0,
         };
+        let panned = BalanceTap {
+            inner: tapped,
+            channels: channels.get() as usize,
+            channel_index: 0,
+            balance: self.balance.clone(),
+        };
 
         let player = rodio::Player::connect_new(self._device_sink.mixer());
-        player.append(tapped);
+        player.append(panned);
         player.set_volume(self.volume);
         player.pause();
 
@@ -289,6 +317,74 @@ fn visualizer_band_edges(sample_rate: f32, fft_size: usize) -> [(usize, usize); 
 }
 
 impl<S: Source> Source for VisualizerTap<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+        self.inner.try_seek(pos)
+    }
+}
+
+/// Wraps a [`Source`], attenuating the left or right channel of stereo
+/// audio according to a shared balance value (read live, so it can change
+/// mid-playback without rebuilding the source chain). Mono sources pass
+/// through unchanged, since there's nothing to pan between.
+struct BalanceTap<S> {
+    inner: S,
+    channels: usize,
+    channel_index: usize,
+    balance: Arc<AtomicU32>,
+}
+
+/// Linear pan: at center both channels play at full volume; moving toward
+/// one side attenuates the other channel down to silence, never boosts.
+fn pan_gains(balance: f32) -> (f32, f32) {
+    if balance <= 0.5 {
+        (1.0, balance * 2.0)
+    } else {
+        ((1.0 - balance) * 2.0, 1.0)
+    }
+}
+
+impl<S: Source> Iterator for BalanceTap<S> {
+    type Item = rodio::Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = self.inner.next()?;
+        if self.channels < 2 {
+            return Some(sample);
+        }
+        let channel = self.channel_index;
+        self.channel_index = (self.channel_index + 1) % self.channels;
+        let balance = f32::from_bits(self.balance.load(Ordering::Relaxed));
+        let (left_gain, right_gain) = pan_gains(balance);
+        let gain = match channel {
+            0 => left_gain,
+            1 => right_gain,
+            _ => 1.0,
+        };
+        Some(sample * gain)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<S: Source> Source for BalanceTap<S> {
     fn current_span_len(&self) -> Option<usize> {
         self.inner.current_span_len()
     }
@@ -515,6 +611,33 @@ mod tests {
     }
 
     #[test]
+    fn seek_backward_after_playing_forward() {
+        let Some(mut player) = test_player() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silence.wav");
+        write_silent_wav(&path, 5.0);
+        player.load(path).unwrap();
+
+        player.seek(Duration::from_secs_f32(3.0));
+        std::thread::sleep(Duration::from_millis(50));
+        let forward_pos = player.position();
+        assert!(
+            forward_pos >= Duration::from_millis(2800),
+            "forward seek didn't land: {forward_pos:?}"
+        );
+
+        player.seek(Duration::from_secs_f32(1.0));
+        std::thread::sleep(Duration::from_millis(50));
+        let backward_pos = player.position();
+        assert!(
+            backward_pos >= Duration::from_millis(900) && backward_pos <= Duration::from_millis(1200),
+            "backward seek didn't land: {backward_pos:?} (was at {forward_pos:?})"
+        );
+    }
+
+    #[test]
     fn stop_resets_position_to_zero() {
         let Some(mut player) = test_player() else {
             return;
@@ -551,5 +674,33 @@ mod tests {
         player.set_volume(0.3);
         player.stop();
         assert_eq!(player.volume(), 0.3);
+    }
+
+    #[test]
+    fn pan_gains_favor_the_louder_side_without_boosting() {
+        assert_eq!(pan_gains(0.5), (1.0, 1.0));
+        assert_eq!(pan_gains(0.0), (1.0, 0.0));
+        assert_eq!(pan_gains(1.0), (0.0, 1.0));
+        let (left, right) = pan_gains(0.25);
+        assert_eq!(left, 1.0);
+        assert!((right - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_balance_clamps_and_persists_across_stop() {
+        let Some(mut player) = test_player() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silence.wav");
+        write_silent_wav(&path, 1.0);
+        player.load(path).unwrap();
+
+        player.set_balance(1.5);
+        assert_eq!(player.balance(), 1.0);
+
+        player.set_balance(0.2);
+        player.stop();
+        assert_eq!(player.balance(), 0.2);
     }
 }
