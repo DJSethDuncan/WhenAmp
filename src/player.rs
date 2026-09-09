@@ -1,16 +1,18 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rodio::{
     stream::{DeviceSinkBuilder, MixerDeviceSink},
-    Decoder,
+    Decoder, Source,
 };
 
 pub struct Player {
     _device_sink: MixerDeviceSink,
     player: Option<rodio::Player>,
     loaded_path: Option<PathBuf>,
+    duration: Option<Duration>,
 }
 
 impl Player {
@@ -23,6 +25,7 @@ impl Player {
             _device_sink: device_sink,
             player: None,
             loaded_path: None,
+            duration: None,
         })
     }
 
@@ -30,9 +33,27 @@ impl Player {
         self.loaded_path.as_deref()
     }
 
+    pub fn duration(&self) -> Option<Duration> {
+        self.duration
+    }
+
+    pub fn position(&self) -> Duration {
+        self.player
+            .as_ref()
+            .map(|player| player.get_pos())
+            .unwrap_or_default()
+    }
+
+    pub fn seek(&self, pos: Duration) {
+        if let Some(player) = &self.player {
+            let _ = player.try_seek(pos);
+        }
+    }
+
     pub fn load(&mut self, path: PathBuf) -> anyhow::Result<()> {
         let file = BufReader::new(File::open(&path)?);
         let source = Decoder::new(file)?;
+        let duration = source.total_duration();
 
         let player = rodio::Player::connect_new(self._device_sink.mixer());
         player.append(source);
@@ -40,6 +61,7 @@ impl Player {
 
         self.player = Some(player);
         self.loaded_path = Some(path);
+        self.duration = duration;
         Ok(())
     }
 
