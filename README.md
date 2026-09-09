@@ -27,16 +27,36 @@ git config core.hooksPath .githooks
 This wires up a pre-commit hook that runs `cargo test` before every commit.
 See `AGENTS.md` for the test-coverage expectations for new features.
 
+## Playlist
+
+Click PL to open the playlist as a separate window (a real OS window via
+egui's multi-viewport support, not embedded). It starts docked to the right
+edge of the player and follows it around; dragging the playlist's own
+titlebar undocks it, and the small circle button on its titlebar toggles
+docked/undocked directly.
+
+- Drop audio files on the **player** window to queue them right after the
+  current track and start playing the first one immediately.
+- Drop audio files on the **playlist** window to queue them the same way,
+  without changing playback.
+- ADD opens a file picker (multi-select); SAVE/LOAD read and write M3U8
+  playlists (`#EXTM3U`/`#EXTINF` with one path per line — the most broadly
+  compatible playlist format); CLEAR empties the queue. Click a track to
+  play it now; × removes it.
+- Prev/Next walk the queue; with no playlist loaded they fall back to
+  restarting the current track. When a track finishes, WhenAmp repeats it
+  (if Repeat is on) or auto-advances to the next queued track, matching
+  ordinary media-player behavior.
+
 ## Design
 
 The UI chrome ("SONIC DECK" graphite skin) is ported from a Claude Design
-mockup. Volume, Balance (double-click to re-center), and Repeat are wired
-to real playback; EQ, PL, and Shuffle remain visual toggles carried over
-from the mockup with no backing behavior (no playlist exists to shuffle or
-equalize). Prev/Next restart the current track, matching the mockup's own
-single-file fallback behavior. The visualizer is a real-time FFT spectrum
-analyzer (bass on the left, treble on the right), fed by a mono downmix tap
-on the decoded audio stream.
+mockup. Volume, Balance (double-click to re-center), Repeat, and now
+Prev/Next/PL are wired to real playback and the playlist; EQ and Shuffle
+remain visual toggles carried over from the mockup with no backing behavior
+(no equalizer, and the queue is navigated in order). The visualizer is a
+real-time FFT spectrum analyzer (bass on the left, treble on the right),
+fed by a mono downmix tap on the decoded audio stream.
 
 The window is undecorated (no native title bar) and sized to exactly fit
 the chassis; the in-app title strip is the drag handle. Its three window
@@ -63,5 +83,6 @@ All embedded in the binary under `assets/fonts/`.
 
 ## Status
 
-Phase 1: load / play / pause / stop / seek with a draggable progress bar
-and a real-time FFT visualizer, no playlist support yet.
+Phase 1: load / play / pause / stop / seek with a draggable progress bar,
+a real-time FFT visualizer, and a playlist (drag & drop, M3U8 save/import,
+dockable window).

@@ -1,10 +1,13 @@
 mod player;
+mod playlist;
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
 use egui::{Color32, Rect, Response, Sense, Stroke, Ui, Vec2};
 use player::{Player, VISUALIZER_BARS};
+use playlist::Playlist;
 
 // Palette lifted from the "SONIC DECK" Claude Design mockup (Graphite chrome).
 const FACE: Color32 = Color32::from_rgb(0x2a, 0x2c, 0x31);
@@ -40,12 +43,14 @@ struct WhenAmpApp {
     remaining_mode: bool,
     viz_bars: [f32; VISUALIZER_BARS],
     eq_on: bool,
-    pl_on: bool,
     shuffle_on: bool,
     repeat_on: bool,
     is_playing: bool,
     last_window_size: Option<Vec2>,
     micro_mode: bool,
+    playlist: Playlist,
+    playlist_open: bool,
+    playlist_docked: bool,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -381,6 +386,296 @@ fn visualizer(ui: &mut Ui, size: Vec2, bars: &[f32; VISUALIZER_BARS]) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Direction {
+    Prev,
+    Next,
+}
+
+/// Prev/Next: walks the playlist if one exists, otherwise falls back to
+/// restarting the current track (there's nothing to skip to without a
+/// queue).
+fn play_adjacent_track(
+    playlist: &mut Playlist,
+    player: &mut Player,
+    status: &mut String,
+    is_playing: &mut bool,
+    direction: Direction,
+) {
+    let next_path = match direction {
+        Direction::Prev => playlist.prev(),
+        Direction::Next => playlist.next(),
+    };
+    match next_path {
+        Some(path) => match player.load(path.clone()) {
+            Ok(()) => {
+                player.play();
+                *is_playing = true;
+            }
+            Err(err) => {
+                *status = format!("Failed to load: {err}");
+            }
+        },
+        None => player.seek(Duration::ZERO),
+    }
+}
+
+/// Queues each dropped path right after the current track, in the order
+/// they were dropped, then loads and plays the first one queued — used for
+/// files dropped onto the main player window.
+fn queue_and_play_first(
+    playlist: &mut Playlist,
+    player: &mut Player,
+    status: &mut String,
+    is_playing: &mut bool,
+    paths: Vec<PathBuf>,
+) {
+    let mut first_index = None;
+    for path in paths {
+        let index = playlist.insert_next(path);
+        first_index.get_or_insert(index);
+    }
+    let Some(index) = first_index else { return };
+    if let Some(path) = playlist.set_current(index) {
+        match player.load(path) {
+            Ok(()) => {
+                player.play();
+                *is_playing = true;
+            }
+            Err(err) => {
+                *status = format!("Failed to load: {err}");
+            }
+        }
+    }
+}
+
+/// Queues each dropped path right after the current track, without
+/// changing playback — used for files dropped onto the playlist window.
+fn queue_tracks(playlist: &mut Playlist, paths: Vec<PathBuf>) {
+    for path in paths {
+        playlist.insert_next(path);
+    }
+}
+
+/// Absolute local file paths from whatever was dropped onto this viewport
+/// this frame.
+fn dropped_file_paths(ui: &Ui) -> Vec<PathBuf> {
+    ui.ctx().input(|i| {
+        i.raw
+            .dropped_files
+            .iter()
+            .map(|f| f.path().to_path_buf())
+            .collect()
+    })
+}
+
+/// Draws the playlist window's contents: its own mini titlebar (dock toggle
+/// + close), an ADD/SAVE/LOAD/CLEAR toolbar, and the scrollable track list.
+fn playlist_window_contents(
+    ui: &mut Ui,
+    playlist: &mut Playlist,
+    player: &mut Player,
+    docked: &mut bool,
+    open: &mut bool,
+    status: &mut String,
+    is_playing: &mut bool,
+) {
+    egui::Frame::new()
+        .fill(FACE)
+        .corner_radius(CHASSIS_CORNER_RADIUS)
+        .inner_margin(egui::Margin::same(3))
+        .show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+
+            let (title_rect, title_drag) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), 22.0),
+                Sense::click_and_drag(),
+            );
+            if title_drag.drag_started() {
+                // Dragging the playlist's own titlebar always undocks it —
+                // otherwise it would immediately snap back to the main
+                // window's side every frame.
+                *docked = false;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            ui.painter().rect_filled(
+                title_rect,
+                egui::CornerRadius {
+                    nw: CHASSIS_CORNER_RADIUS,
+                    ne: CHASSIS_CORNER_RADIUS,
+                    sw: 0,
+                    se: 0,
+                },
+                TITLE_BAR_BG,
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(title_rect), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    let (dock_rect, dock_resp) =
+                        ui.allocate_exact_size(Vec2::new(16.0, 14.0), Sense::click());
+                    bevel_rect(ui, dock_rect, FACE, true);
+                    if *docked {
+                        ui.painter().circle_filled(dock_rect.center(), 3.0, LCD_GREEN);
+                    } else {
+                        ui.painter().circle_stroke(
+                            dock_rect.center(),
+                            3.0,
+                            Stroke::new(1.0, INK),
+                        );
+                    }
+                    let dock_hover = if *docked {
+                        "Undock"
+                    } else {
+                        "Dock to player"
+                    };
+                    if dock_resp.on_hover_text(dock_hover).clicked() {
+                        *docked = !*docked;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("PLAYLIST")
+                            .font(silkscreen_font(9.0))
+                            .color(LABEL_GRAY),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
+                        let (close_rect, close_resp) =
+                            ui.allocate_exact_size(Vec2::new(16.0, 14.0), Sense::click());
+                        bevel_rect(
+                            ui,
+                            close_rect,
+                            FACE,
+                            !close_resp.is_pointer_button_down_on(),
+                        );
+                        let c = close_rect.center();
+                        ui.painter().line_segment(
+                            [c + Vec2::new(-3.0, -3.0), c + Vec2::new(3.0, 3.0)],
+                            Stroke::new(1.0, CLOSE_RED),
+                        );
+                        ui.painter().line_segment(
+                            [c + Vec2::new(-3.0, 3.0), c + Vec2::new(3.0, -3.0)],
+                            Stroke::new(1.0, CLOSE_RED),
+                        );
+                        if close_resp.clicked() {
+                            *open = false;
+                        }
+                    });
+                });
+            });
+
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                if toggle_label_button(ui, "ADD", false, 42.0)
+                    .on_hover_text("Add files")
+                    .clicked()
+                {
+                    if let Some(paths) = rfd::FileDialog::new()
+                        .add_filter("Audio", &["mp3", "wav", "flac", "ogg"])
+                        .pick_files()
+                    {
+                        queue_tracks(playlist, paths);
+                    }
+                }
+                ui.add_space(3.0);
+                if toggle_label_button(ui, "SAVE", false, 42.0)
+                    .on_hover_text("Save playlist (.m3u8)")
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Playlist", &["m3u", "m3u8"])
+                        .set_file_name("playlist.m3u8")
+                        .save_file()
+                    {
+                        if let Err(err) = playlist.save_m3u(&path) {
+                            *status = format!("Failed to save playlist: {err}");
+                        }
+                    }
+                }
+                ui.add_space(3.0);
+                if toggle_label_button(ui, "LOAD", false, 42.0)
+                    .on_hover_text("Import playlist")
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Playlist", &["m3u", "m3u8"])
+                        .pick_file()
+                    {
+                        match Playlist::load_m3u(&path) {
+                            Ok(paths) => {
+                                for p in paths {
+                                    playlist.push(p);
+                                }
+                            }
+                            Err(err) => {
+                                *status = format!("Failed to import playlist: {err}");
+                            }
+                        }
+                    }
+                }
+                ui.add_space(3.0);
+                if toggle_label_button(ui, "CLEAR", false, 42.0)
+                    .on_hover_text("Clear playlist")
+                    .clicked()
+                {
+                    playlist.clear();
+                }
+            });
+
+            ui.add_space(6.0);
+
+            let mut to_play = None;
+            let mut to_remove = None;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if playlist.entries.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Drop audio files here, or use ADD.")
+                            .font(silkscreen_font(9.0))
+                            .color(DIM_GRAY),
+                    );
+                }
+                for (index, entry) in playlist.entries.iter().enumerate() {
+                    let is_current = playlist.current == Some(index);
+                    ui.horizontal(|ui| {
+                        let color = if is_current { LCD_GREEN } else { INK };
+                        let label = egui::RichText::new(&entry.display_name).color(color);
+                        if ui.selectable_label(is_current, label).clicked() {
+                            to_play = Some(index);
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .small_button("×")
+                                .on_hover_text("Remove")
+                                .clicked()
+                            {
+                                to_remove = Some(index);
+                            }
+                        });
+                    });
+                }
+            });
+
+            if let Some(index) = to_play {
+                if let Some(path) = playlist.set_current(index) {
+                    match player.load(path) {
+                        Ok(()) => {
+                            player.play();
+                            *is_playing = true;
+                        }
+                        Err(err) => {
+                            *status = format!("Failed to load: {err}");
+                        }
+                    }
+                }
+            }
+            if let Some(index) = to_remove {
+                playlist.remove(index);
+            }
+        });
+}
+
 impl WhenAmpApp {
     fn new() -> Self {
         let base = Self {
@@ -393,12 +688,14 @@ impl WhenAmpApp {
             remaining_mode: false,
             viz_bars: [0.0; VISUALIZER_BARS],
             eq_on: true,
-            pl_on: false,
             shuffle_on: false,
             repeat_on: false,
             is_playing: false,
             last_window_size: None,
             micro_mode: false,
+            playlist: Playlist::new(),
+            playlist_open: false,
+            playlist_docked: true,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -435,6 +732,16 @@ impl eframe::App for WhenAmpApp {
         };
 
         {
+            let dropped = dropped_file_paths(ui);
+            if !dropped.is_empty() {
+                queue_and_play_first(
+                    &mut self.playlist,
+                    player,
+                    &mut self.status,
+                    &mut self.is_playing,
+                    dropped,
+                );
+            }
 
             let has_song = player.loaded_path().is_some();
             let duration = player.duration().unwrap_or_default();
@@ -443,10 +750,20 @@ impl eframe::App for WhenAmpApp {
                 .seek_drag_secs
                 .unwrap_or_else(|| player.position().as_secs_f32().min(duration_secs));
 
-            if self.repeat_on && has_song && pos_secs >= duration_secs - 0.05 {
-                player.seek(Duration::ZERO);
-                player.play();
-                self.is_playing = true;
+            // Track finished: repeat it, advance the queue, or stop.
+            if self.is_playing && has_song && pos_secs >= duration_secs - 0.05 {
+                if self.repeat_on {
+                    player.seek(Duration::ZERO);
+                    player.play();
+                } else if let Some(next_path) = self.playlist.next() {
+                    match player.load(next_path) {
+                        Ok(()) => player.play(),
+                        Err(err) => self.status = format!("Failed to load: {err}"),
+                    }
+                } else {
+                    player.pause();
+                    self.is_playing = false;
+                }
                 pos_secs = 0.0;
             }
 
@@ -934,8 +1251,11 @@ impl eframe::App for WhenAmpApp {
                                     self.eq_on = !self.eq_on;
                                 }
                                 ui.add_space(3.0);
-                                if toggle_label_button(ui, "PL", self.pl_on, 34.0).clicked() {
-                                    self.pl_on = !self.pl_on;
+                                if toggle_label_button(ui, "PL", self.playlist_open, 34.0)
+                                    .on_hover_text("Playlist")
+                                    .clicked()
+                                {
+                                    self.playlist_open = !self.playlist_open;
                                 }
                             });
 
@@ -994,10 +1314,16 @@ impl eframe::App for WhenAmpApp {
 
                                 ui.add_enabled_ui(has_song, |ui| {
                                     if icon_button(ui, Icon::Prev)
-                                        .on_hover_text("Restart")
+                                        .on_hover_text("Previous")
                                         .clicked()
                                     {
-                                        player.seek(Duration::ZERO);
+                                        play_adjacent_track(
+                                            &mut self.playlist,
+                                            player,
+                                            &mut self.status,
+                                            &mut self.is_playing,
+                                            Direction::Prev,
+                                        );
                                     }
                                     if icon_button(ui, Icon::Play).on_hover_text("Play").clicked()
                                     {
@@ -1017,10 +1343,16 @@ impl eframe::App for WhenAmpApp {
                                         self.is_playing = false;
                                     }
                                     if icon_button(ui, Icon::Next)
-                                        .on_hover_text("Restart")
+                                        .on_hover_text("Next")
                                         .clicked()
                                     {
-                                        player.seek(Duration::ZERO);
+                                        play_adjacent_track(
+                                            &mut self.playlist,
+                                            player,
+                                            &mut self.status,
+                                            &mut self.is_playing,
+                                            Direction::Next,
+                                        );
                                     }
                                 });
 
@@ -1067,6 +1399,58 @@ impl eframe::App for WhenAmpApp {
                 self.last_window_size = Some(desired_size);
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::InnerSize(desired_size));
+            }
+
+            if self.playlist_open {
+                let main_rect = ui.ctx().input(|i| i.viewport().outer_rect);
+                let dock_target = main_rect.map(|rect| egui::pos2(rect.right() + 6.0, rect.top()));
+
+                let mut builder = egui::ViewportBuilder::default()
+                    .with_title("WhenAmp Playlist")
+                    .with_inner_size([260.0, 320.0])
+                    .with_min_inner_size([200.0, 160.0])
+                    .with_resizable(true)
+                    .with_decorations(false)
+                    .with_transparent(true);
+                if self.playlist_docked {
+                    if let Some(pos) = dock_target {
+                        builder = builder.with_position(pos);
+                    }
+                }
+
+                let playlist = &mut self.playlist;
+                let playlist_docked = &mut self.playlist_docked;
+                let playlist_open = &mut self.playlist_open;
+                let status = &mut self.status;
+                let is_playing = &mut self.is_playing;
+
+                ui.ctx().show_viewport_immediate(
+                    egui::ViewportId::from_hash_of("whenamp-playlist"),
+                    builder,
+                    |ui, _class| {
+                        if *playlist_docked {
+                            if let Some(pos) = dock_target {
+                                ui.ctx()
+                                    .send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                            }
+                        }
+
+                        let dropped = dropped_file_paths(ui);
+                        if !dropped.is_empty() {
+                            queue_tracks(playlist, dropped);
+                        }
+
+                        playlist_window_contents(
+                            ui,
+                            playlist,
+                            player,
+                            playlist_docked,
+                            playlist_open,
+                            status,
+                            is_playing,
+                        );
+                    },
+                );
             }
 
             self.viz_bars = player.sample_visualizer();

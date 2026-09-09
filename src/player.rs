@@ -416,6 +416,16 @@ fn read_title_tag(path: &Path) -> Option<String> {
     Some(title.to_string())
 }
 
+/// The metadata title if present, otherwise the filename. Usable without
+/// loading the file into a [`Player`] — e.g. for listing playlist entries.
+pub fn track_display_name(path: &Path) -> String {
+    read_title_tag(path).unwrap_or_else(|| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +527,15 @@ mod tests {
         player.load(path).unwrap();
 
         assert_eq!(player.display_name().as_deref(), Some("silence.wav"));
+    }
+
+    #[test]
+    fn track_display_name_works_without_loading_into_a_player() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_tag.wav");
+        write_silent_wav(&path, 1.0);
+
+        assert_eq!(track_display_name(&path), "no_tag.wav");
     }
 
     #[test]
