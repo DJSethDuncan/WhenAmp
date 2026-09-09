@@ -27,6 +27,12 @@ git config core.hooksPath .githooks
 This wires up a pre-commit hook that runs `cargo test` before every commit.
 See `AGENTS.md` for the test-coverage expectations for new features.
 
+## Fonts
+
+The LCD time display uses [DSEG7-Classic](https://github.com/keshikan/DSEG) by
+keshikan, embedded in the binary under `assets/fonts/`. Licensed under the
+SIL Open Font License 1.1 (`assets/fonts/DSEG-LICENSE.txt`).
+
 ## Status
 
 Phase 1: load / play / pause / stop / seek with a draggable progress bar,

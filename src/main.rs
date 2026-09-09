@@ -8,17 +8,88 @@ use player::Player;
 
 const LCD_GREEN: Color32 = Color32::from_rgb(57, 255, 20);
 const LCD_BG: Color32 = Color32::from_rgb(10, 20, 10);
+const LCD_FONT_NAME: &str = "dseg7-classic-bold";
+const TITLE_MARQUEE_WIDTH: f32 = 150.0;
+const TITLE_MARQUEE_DELAY_SECS: f64 = 2.0;
+const TITLE_MARQUEE_SPEED_PPS: f32 = 40.0;
+const TITLE_MARQUEE_GAP: &str = "          "; // 10 chars
 
 struct WhenAmpApp {
     player: Option<Player>,
     init_error: Option<String>,
     status: String,
     seek_drag_secs: Option<f32>,
+    title_marquee_text: String,
+    title_marquee_started_at: f64,
 }
 
 fn format_duration(d: Duration) -> String {
     let total_secs = d.as_secs();
     format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
+}
+
+fn install_lcd_font(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        LCD_FONT_NAME.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/DSEG7Classic-Bold.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Name(LCD_FONT_NAME.into()))
+        .or_default()
+        .insert(0, LCD_FONT_NAME.to_owned());
+    ctx.set_fonts(fonts);
+}
+
+fn lcd_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(LCD_FONT_NAME.into()))
+}
+
+/// Draws `text` clipped to a single row of `width` points. If the text is too
+/// wide to fit, it waits `TITLE_MARQUEE_DELAY_SECS` (measured from
+/// `started_at`) and then scrolls continuously, looping with a gap between
+/// repeats.
+fn marquee_label(ui: &mut egui::Ui, text: &str, width: f32, started_at: f64) {
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let color = ui.visuals().text_color();
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font_id.clone(), color);
+    let text_width = galley.size().x;
+    let row_height = galley.size().y;
+
+    let (rect, _response) =
+        ui.allocate_exact_size(egui::vec2(width, row_height), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+
+    let painter = ui.painter_at(rect);
+
+    if text_width <= width {
+        painter.galley(rect.left_top(), galley, color);
+        return;
+    }
+
+    let gap_galley = painter.layout_no_wrap(TITLE_MARQUEE_GAP.to_owned(), font_id, color);
+    let cycle_width = text_width + gap_galley.size().x;
+
+    let now = ui.ctx().input(|i| i.time);
+    let elapsed = (now - started_at).max(0.0);
+    let offset = if elapsed <= TITLE_MARQUEE_DELAY_SECS {
+        0.0
+    } else {
+        (((elapsed - TITLE_MARQUEE_DELAY_SECS) as f32) * TITLE_MARQUEE_SPEED_PPS) % cycle_width
+    };
+
+    let start_x = rect.left() - offset;
+    painter.galley(egui::pos2(start_x, rect.top()), galley.clone(), color);
+    painter.galley(egui::pos2(start_x + cycle_width, rect.top()), galley, color);
+
+    ui.ctx().request_repaint();
 }
 
 impl WhenAmpApp {
@@ -29,12 +100,16 @@ impl WhenAmpApp {
                 init_error: None,
                 status: "No song loaded".to_string(),
                 seek_drag_secs: None,
+                title_marquee_text: String::new(),
+                title_marquee_started_at: 0.0,
             },
             Err(err) => Self {
                 player: None,
                 init_error: Some(format!("Audio init failed: {err}")),
                 status: String::new(),
                 seek_drag_secs: None,
+                title_marquee_text: String::new(),
+                title_marquee_started_at: 0.0,
             },
         }
     }
@@ -72,6 +147,16 @@ impl eframe::App for WhenAmpApp {
             "LOAD".to_string()
         };
 
+        let title_text = if has_song {
+            player.display_name().unwrap_or_default()
+        } else {
+            "No song loaded".to_string()
+        };
+        if title_text != self.title_marquee_text {
+            self.title_marquee_text = title_text.clone();
+            self.title_marquee_started_at = ui.ctx().input(|i| i.time);
+        }
+
         ui.horizontal(|ui| {
             egui::Frame::new()
                 .fill(LCD_BG)
@@ -80,8 +165,7 @@ impl eframe::App for WhenAmpApp {
                 .show(ui, |ui| {
                     ui.label(
                         RichText::new(lcd_text)
-                            .monospace()
-                            .size(48.0)
+                            .font(lcd_font(48.0))
                             .color(LCD_GREEN),
                     );
                 });
@@ -93,12 +177,14 @@ impl eframe::App for WhenAmpApp {
                 .show(ui, |ui| {
                     ui.set_min_size(egui::vec2(160.0, 68.0));
                     ui.vertical(|ui| {
+                        marquee_label(
+                            ui,
+                            &title_text,
+                            TITLE_MARQUEE_WIDTH,
+                            self.title_marquee_started_at,
+                        );
                         if has_song {
-                            let name = player.display_name().unwrap_or_default();
-                            ui.label(RichText::new(name).strong());
                             ui.label(format!("({})", format_duration(duration)));
-                        } else {
-                            ui.label(RichText::new("No song loaded").weak());
                         }
                     });
                 });
@@ -180,7 +266,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "WhenAmp",
         options,
-        Box::new(|_cc| Ok(Box::new(WhenAmpApp::new()))),
+        Box::new(|cc| {
+            install_lcd_font(&cc.egui_ctx);
+            Ok(Box::new(WhenAmpApp::new()))
+        }),
     )
 }
 
