@@ -40,9 +40,10 @@ on the decoded audio stream.
 
 The window is undecorated (no native title bar) and sized to exactly fit
 the chassis; the in-app title strip is the drag handle. Its three window
-controls: the square button toggles a compact single-row mini-player
-(time, transport, ticker, spectrum — capped at 50px tall, same width as
-the full window), the dash minimizes, and the "x" closes.
+controls: the square button toggles "micro mode" — a single row the same
+height as the title strip (24px), same width as the full window, with its
+own window controls plus the time counter, transport, title ticker, and
+spectrum analyzer — the dash minimizes, and the "x" closes.
 
 ## Fonts
 

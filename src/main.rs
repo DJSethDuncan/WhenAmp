@@ -44,7 +44,7 @@ struct WhenAmpApp {
     repeat_on: bool,
     is_playing: bool,
     last_window_size: Option<Vec2>,
-    compact_mode: bool,
+    micro_mode: bool,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -397,7 +397,7 @@ impl WhenAmpApp {
             repeat_on: false,
             is_playing: false,
             last_window_size: None,
-            compact_mode: false,
+            micro_mode: false,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -477,11 +477,7 @@ impl eframe::App for WhenAmpApp {
                 elapsed_secs
             };
             let lcd_text = if has_song {
-                format!(
-                    "{}{}",
-                    if self.remaining_mode { "-" } else { "" },
-                    format_duration(shown)
-                )
+                format_duration(shown)
             } else {
                 "LOAD".to_string()
             };
@@ -493,8 +489,9 @@ impl eframe::App for WhenAmpApp {
             let chassis_response = chassis_frame.show(ui, |ui| {
                     ui.set_width(CHASSIS_WIDTH);
 
-                    if self.compact_mode {
-                        let row_size = Vec2::new(CHASSIS_WIDTH, 40.0);
+                    if self.micro_mode {
+                        // Same height as the full-mode title strip.
+                        let row_size = Vec2::new(CHASSIS_WIDTH, 24.0);
                         let (row_rect, row_drag) =
                             ui.allocate_exact_size(row_size, Sense::click_and_drag());
                         if row_drag.drag_started() {
@@ -504,11 +501,31 @@ impl eframe::App for WhenAmpApp {
 
                         ui.scope_builder(
                             egui::UiBuilder::new()
-                                .max_rect(row_rect.shrink2(Vec2::new(6.0, 4.0))),
+                                .max_rect(row_rect.shrink2(Vec2::new(6.0, 1.0))),
                             |ui| {
                                 ui.with_layout(
                                     egui::Layout::left_to_right(egui::Align::Center),
                                     |ui| {
+                                        let (dash_rect, dash_resp) = ui.allocate_exact_size(
+                                            Vec2::new(16.0, 14.0),
+                                            Sense::click(),
+                                        );
+                                        bevel_rect(ui, dash_rect, FACE, true);
+                                        let dash = Rect::from_center_size(
+                                            egui::pos2(
+                                                dash_rect.center().x,
+                                                dash_rect.bottom() - 4.0,
+                                            ),
+                                            Vec2::new(8.0, 2.0),
+                                        );
+                                        ui.painter().rect_filled(dash, 0.0, INK);
+                                        if dash_resp.on_hover_text("Minimize").clicked() {
+                                            ui.ctx().send_viewport_cmd(
+                                                egui::ViewportCommand::Minimized(true),
+                                            );
+                                        }
+
+                                        ui.add_space(2.0);
                                         let (restore_rect, restore_resp) = ui.allocate_exact_size(
                                             Vec2::new(16.0, 14.0),
                                             Sense::click(),
@@ -522,10 +539,10 @@ impl eframe::App for WhenAmpApp {
                                             egui::StrokeKind::Inside,
                                         );
                                         if restore_resp.on_hover_text("Restore").clicked() {
-                                            self.compact_mode = false;
+                                            self.micro_mode = false;
                                         }
 
-                                        ui.add_space(3.0);
+                                        ui.add_space(2.0);
                                         let (close_rect, close_resp) = ui.allocate_exact_size(
                                             Vec2::new(16.0, 14.0),
                                             Sense::click(),
@@ -553,12 +570,12 @@ impl eframe::App for WhenAmpApp {
                                         ui.add_space(8.0);
                                         ui.label(
                                             egui::RichText::new(lcd_text.clone())
-                                                .font(lcd_font(18.0))
+                                                .font(lcd_font(14.0))
                                                 .color(LCD_GREEN),
                                         );
 
                                         ui.add_space(8.0);
-                                        let btn_size = Vec2::new(22.0, 22.0);
+                                        let btn_size = Vec2::new(18.0, 16.0);
                                         ui.add_enabled_ui(has_song, |ui| {
                                             if icon_button_sized(ui, Icon::Play, btn_size)
                                                 .on_hover_text("Play")
@@ -598,7 +615,7 @@ impl eframe::App for WhenAmpApp {
                                         ui.add_space(8.0);
                                         visualizer(
                                             ui,
-                                            Vec2::new(spectrum_width, 24.0),
+                                            Vec2::new(spectrum_width, 16.0),
                                             &self.viz_bars,
                                         );
                                     },
@@ -684,7 +701,7 @@ impl eframe::App for WhenAmpApp {
                                         egui::StrokeKind::Inside,
                                     );
                                     if sq_resp.on_hover_text("Mini player").clicked() {
-                                        self.compact_mode = !self.compact_mode;
+                                        self.micro_mode = !self.micro_mode;
                                     }
 
                                     ui.add_space(3.0);
@@ -774,8 +791,10 @@ impl eframe::App for WhenAmpApp {
                                                     silkscreen_font(9.0),
                                                     LCD_PANEL_BG,
                                                 );
-                                                let pos = (kbps_rect.center() - g.size() / 2.0)
-                                                    .round();
+                                                let pos = (kbps_rect.center()
+                                                    - g.size() / 2.0
+                                                    - Vec2::new(0.0, 4.0))
+                                                .round();
                                                 ui.painter().galley(pos, g, LCD_PANEL_BG);
 
                                                 ui.add_space(4.0);
@@ -794,8 +813,10 @@ impl eframe::App for WhenAmpApp {
                                                     silkscreen_font(9.0),
                                                     LCD_GREEN,
                                                 );
-                                                let pos =
-                                                    (khz_rect.center() - g.size() / 2.0).round();
+                                                let pos = (khz_rect.center()
+                                                    - g.size() / 2.0
+                                                    - Vec2::new(0.0, 4.0))
+                                                .round();
                                                 ui.painter().galley(pos, g, LCD_GREEN);
 
                                                 ui.add_space(4.0);
@@ -819,8 +840,10 @@ impl eframe::App for WhenAmpApp {
                                                     silkscreen_font(9.0),
                                                     LCD_PANEL_BG,
                                                 );
-                                                let pos =
-                                                    (st_rect.center() - g.size() / 2.0).round();
+                                                let pos = (st_rect.center()
+                                                    - g.size() / 2.0
+                                                    - Vec2::new(0.0, 4.0))
+                                                .round();
                                                 ui.painter().galley(pos, g, LCD_PANEL_BG);
                                             });
                                         });
@@ -898,13 +921,15 @@ impl eframe::App for WhenAmpApp {
 
                             ui.add_space(8.0);
 
-                            // Seek bar.
+                            // Seek bar, inset 5px further on each side than the
+                            // content column so it doesn't crowd the chassis edge.
                             let seek_value = pos_secs / duration_secs;
-                            let (seek_resp, seek_drag) = seek_bar(
-                                ui,
-                                Vec2::new(CHASSIS_WIDTH - 16.0, 10.0),
-                                seek_value,
-                            );
+                            let (seek_resp, seek_drag) = ui
+                                .horizontal(|ui| {
+                                    ui.add_space(5.0);
+                                    seek_bar(ui, Vec2::new(CHASSIS_WIDTH - 26.0, 10.0), seek_value)
+                                })
+                                .inner;
                             if has_song {
                                 if let Some(v) = seek_drag {
                                     self.seek_drag_secs = Some(v * duration_secs);
