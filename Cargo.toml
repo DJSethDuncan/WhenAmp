@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
-eframe = "0.36.2"
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "x11", "wayland", "accesskit", "links"] }
 egui = "0.36.2"
 rfd = "0.17.2"
 rodio = "0.22.2"
