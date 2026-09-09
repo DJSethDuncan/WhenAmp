@@ -37,8 +37,13 @@ impl WhenAmpApp {
 
 impl eframe::App for WhenAmpApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui.heading("WhenAmp");
-        ui.add_space(8.0);
+        let window_title = self
+            .player
+            .as_ref()
+            .and_then(|player| player.display_name())
+            .unwrap_or_else(|| "WhenAmp".to_string());
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Title(window_title));
 
         if let Some(err) = &self.init_error {
             ui.colored_label(egui::Color32::RED, err);
@@ -102,6 +107,8 @@ impl eframe::App for WhenAmpApp {
             .unwrap_or_else(|| player.position().as_secs_f32().min(duration_secs));
 
         ui.horizontal(|ui| {
+            ui.label(format_duration(Duration::from_secs_f32(pos_secs)));
+
             let slider = egui::Slider::new(&mut pos_secs, 0.0..=duration_secs).show_value(false);
             let response = ui.add_enabled(has_song, slider);
             if response.dragged() {
@@ -111,6 +118,7 @@ impl eframe::App for WhenAmpApp {
                 player.seek(Duration::from_secs_f32(pos_secs));
                 self.seek_drag_secs = None;
             }
+
             ui.label(format_duration(duration));
         });
 

@@ -3,6 +3,9 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use lofty::file::TaggedFileExt;
+use lofty::probe::Probe;
+use lofty::tag::Accessor;
 use rodio::{
     stream::{DeviceSinkBuilder, MixerDeviceSink},
     Decoder, Source,
@@ -13,6 +16,7 @@ pub struct Player {
     player: Option<rodio::Player>,
     loaded_path: Option<PathBuf>,
     duration: Option<Duration>,
+    track_title: Option<String>,
 }
 
 impl Player {
@@ -26,11 +30,24 @@ impl Player {
             player: None,
             loaded_path: None,
             duration: None,
+            track_title: None,
         })
     }
 
     pub fn loaded_path(&self) -> Option<&Path> {
         self.loaded_path.as_deref()
+    }
+
+    /// The track's metadata title if present, otherwise its filename.
+    pub fn display_name(&self) -> Option<String> {
+        if let Some(title) = &self.track_title {
+            return Some(title.clone());
+        }
+        self.loaded_path.as_ref().map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string())
+        })
     }
 
     pub fn duration(&self) -> Option<Duration> {
@@ -54,6 +71,7 @@ impl Player {
         let file = BufReader::new(File::open(&path)?);
         let source = Decoder::new(file)?;
         let duration = source.total_duration();
+        let track_title = read_title_tag(&path);
 
         let player = rodio::Player::connect_new(self._device_sink.mixer());
         player.append(source);
@@ -62,6 +80,7 @@ impl Player {
         self.player = Some(player);
         self.loaded_path = Some(path);
         self.duration = duration;
+        self.track_title = track_title;
         Ok(())
     }
 
@@ -84,6 +103,16 @@ impl Player {
             let _ = self.load(path);
         }
     }
+}
+
+/// Reads the track title from the file's metadata tag, if one is present.
+fn read_title_tag(path: &Path) -> Option<String> {
+    let tagged_file = Probe::open(path).ok()?.read().ok()?;
+    let title = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())?
+        .title()?;
+    Some(title.to_string())
 }
 
 #[cfg(test)]
@@ -138,6 +167,21 @@ mod tests {
         };
         assert_eq!(player.duration(), None);
         assert_eq!(player.position(), Duration::ZERO);
+        assert_eq!(player.display_name(), None);
+    }
+
+    #[test]
+    fn display_name_falls_back_to_filename_without_a_title_tag() {
+        let Some(mut player) = test_player() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silence.wav");
+        write_silent_wav(&path, 1.0);
+
+        player.load(path).unwrap();
+
+        assert_eq!(player.display_name().as_deref(), Some("silence.wav"));
     }
 
     #[test]
