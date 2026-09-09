@@ -48,6 +48,86 @@ fn lcd_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name(LCD_FONT_NAME.into()))
 }
 
+#[derive(Clone, Copy)]
+enum Icon {
+    Load,
+    Play,
+    Pause,
+    Stop,
+}
+
+/// A square toolbar button that draws its own vector icon (no font glyph
+/// dependency, so it renders identically regardless of installed fonts).
+fn icon_button(ui: &mut egui::Ui, icon: Icon) -> egui::Response {
+    let size = egui::vec2(36.0, 32.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let enabled = ui.is_enabled();
+        let visuals = if enabled {
+            ui.style().interact(&response)
+        } else {
+            &ui.style().visuals.widgets.inactive
+        };
+
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            4.0,
+            visuals.bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+
+        let icon_color = visuals.fg_stroke.color;
+        let center = rect.center();
+        let s = 12.0_f32;
+
+        match icon {
+            Icon::Play => {
+                let points = vec![
+                    egui::pos2(center.x - s * 0.4, center.y - s * 0.5),
+                    egui::pos2(center.x - s * 0.4, center.y + s * 0.5),
+                    egui::pos2(center.x + s * 0.6, center.y),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    points,
+                    icon_color,
+                    egui::Stroke::NONE,
+                ));
+            }
+            Icon::Pause => {
+                let bar_size = egui::vec2(s * 0.28, s);
+                for dx in [-(s * 0.24), s * 0.24] {
+                    let bar = egui::Rect::from_center_size(
+                        egui::pos2(center.x + dx, center.y),
+                        bar_size,
+                    );
+                    painter.rect_filled(bar, 1.0, icon_color);
+                }
+            }
+            Icon::Stop => {
+                let square = egui::Rect::from_center_size(center, egui::vec2(s * 0.85, s * 0.85));
+                painter.rect_filled(square, 1.0, icon_color);
+            }
+            Icon::Load => {
+                let body = egui::Rect::from_center_size(
+                    egui::pos2(center.x, center.y + s * 0.08),
+                    egui::vec2(s * 1.15, s * 0.8),
+                );
+                painter.rect_filled(body, 2.0, icon_color);
+                let tab = egui::Rect::from_min_size(
+                    egui::pos2(body.left() + s * 0.1, body.top() - s * 0.2),
+                    egui::vec2(s * 0.45, s * 0.26),
+                );
+                painter.rect_filled(tab, 1.0, icon_color);
+            }
+        }
+    }
+
+    response
+}
+
 /// Draws `text` clipped to a single row of `width` points. If the text is too
 /// wide to fit, it waits `TITLE_MARQUEE_DELAY_SECS` (measured from
 /// `started_at`) and then scrolls continuously, looping with a gap between
@@ -191,48 +271,47 @@ impl eframe::App for WhenAmpApp {
         });
 
         ui.add_space(8.0);
-
-        if ui.button("Load Song").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Audio", &["mp3", "wav", "flac", "ogg"])
-                .pick_file()
+        ui.horizontal(|ui| {
+            if icon_button(ui, Icon::Load)
+                .on_hover_text("Load Song")
+                .clicked()
             {
-                match player.load(path.clone()) {
-                    Ok(()) => {
-                        self.status = format!(
-                            "Loaded: {}",
-                            path.file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| path.display().to_string())
-                        );
-                    }
-                    Err(err) => {
-                        self.status = format!("Failed to load: {err}");
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Audio", &["mp3", "wav", "flac", "ogg"])
+                    .pick_file()
+                {
+                    match player.load(path.clone()) {
+                        Ok(()) => {
+                            self.status = format!(
+                                "Loaded: {}",
+                                path.file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.display().to_string())
+                            );
+                        }
+                        Err(err) => {
+                            self.status = format!("Failed to load: {err}");
+                        }
                     }
                 }
             }
-        }
 
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(has_song, egui::Button::new("Play"))
-                .clicked()
-            {
-                player.play();
-            }
-            if ui
-                .add_enabled(has_song, egui::Button::new("Pause"))
-                .clicked()
-            {
-                player.pause();
-            }
-            if ui
-                .add_enabled(has_song, egui::Button::new("Stop"))
-                .clicked()
-            {
-                player.stop();
-            }
+            ui.add_space(4.0);
+
+            ui.add_enabled_ui(has_song, |ui| {
+                if icon_button(ui, Icon::Play).on_hover_text("Play").clicked() {
+                    player.play();
+                }
+                if icon_button(ui, Icon::Pause)
+                    .on_hover_text("Pause")
+                    .clicked()
+                {
+                    player.pause();
+                }
+                if icon_button(ui, Icon::Stop).on_hover_text("Stop").clicked() {
+                    player.stop();
+                }
+            });
         });
 
         ui.add_space(8.0);
