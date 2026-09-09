@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs the test suite before allowing a commit. Enabled via:
+#   git config core.hooksPath .githooks
+
+set -e
+
+if ! command -v cargo >/dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
+echo "Running cargo test..."
+cargo test

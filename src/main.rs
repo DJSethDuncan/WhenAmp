@@ -135,3 +135,16 @@ fn main() -> eframe::Result<()> {
         Box::new(|_cc| Ok(Box::new(WhenAmpApp::new()))),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_seconds_as_mmss() {
+        assert_eq!(format_duration(Duration::from_secs(0)), "0:00");
+        assert_eq!(format_duration(Duration::from_secs(5)), "0:05");
+        assert_eq!(format_duration(Duration::from_secs(65)), "1:05");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "61:01");
+    }
+}

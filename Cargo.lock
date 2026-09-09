@@ -3871,6 +3871,7 @@ dependencies = [
  "egui",
  "rfd",
  "rodio",
+ "tempfile",
 ]
 
 [[package]]
