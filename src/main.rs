@@ -21,7 +21,6 @@ const LCD_GREEN: Color32 = Color32::from_rgb(0x4e, 0xe3, 0x9a);
 const LCD_PANEL_BG: Color32 = Color32::from_rgb(0x04, 0x07, 0x0a);
 const VIS_CANVAS_BG: Color32 = Color32::from_rgb(0x01, 0x04, 0x04);
 const TRACK_BG: Color32 = Color32::from_rgb(0x10, 0x12, 0x16);
-const WINDOW_BG: Color32 = Color32::from_rgb(0x15, 0x16, 0x1a);
 
 const LCD_FONT_NAME: &str = "dseg7-classic-bold";
 const SILKSCREEN_FONT_NAME: &str = "silkscreen";
@@ -46,6 +45,7 @@ struct WhenAmpApp {
     shuffle_on: bool,
     repeat_on: bool,
     is_playing: bool,
+    last_window_size: Option<Vec2>,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -391,6 +391,7 @@ impl WhenAmpApp {
             shuffle_on: false,
             repeat_on: false,
             is_playing: false,
+            last_window_size: None,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -417,17 +418,16 @@ impl eframe::App for WhenAmpApp {
         ui.ctx()
             .send_viewport_cmd(egui::ViewportCommand::Title(window_title));
 
-        egui::Frame::new().fill(WINDOW_BG).show(ui, |ui| {
-            ui.set_min_size(ui.available_size());
+        if let Some(err) = &self.init_error {
+            ui.colored_label(egui::Color32::RED, err);
+            return;
+        }
 
-            if let Some(err) = &self.init_error {
-                ui.colored_label(egui::Color32::RED, err);
-                return;
-            }
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
 
-            let Some(player) = self.player.as_mut() else {
-                return;
-            };
+        {
 
             let has_song = player.loaded_path().is_some();
             let duration = player.duration().unwrap_or_default();
@@ -480,21 +480,22 @@ impl eframe::App for WhenAmpApp {
                 "LOAD".to_string()
             };
 
-            ui.vertical_centered(|ui| {
-                ui.add_space(12.0);
-
-                // Outer chassis.
-                let chassis_frame = egui::Frame::new()
-                    .fill(FACE)
-                    .inner_margin(egui::Margin::same(3));
-                chassis_frame.show(ui, |ui| {
+            // Outer chassis, sized to exactly fill the (undecorated) window.
+            let chassis_frame = egui::Frame::new()
+                .fill(FACE)
+                .inner_margin(egui::Margin::same(3));
+            let chassis_response = chassis_frame.show(ui, |ui| {
                     ui.set_width(CHASSIS_WIDTH);
 
-                    // Title strip.
-                    let (title_rect, _) = ui.allocate_exact_size(
+                    // Title strip. Doubles as the window's drag handle, since
+                    // decorations are off and this is the only chrome we have.
+                    let (title_rect, title_drag) = ui.allocate_exact_size(
                         Vec2::new(CHASSIS_WIDTH, 24.0),
-                        Sense::hover(),
+                        Sense::click_and_drag(),
                     );
+                    if title_drag.drag_started() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
                     ui.painter().rect_filled(title_rect, 0.0, TITLE_BAR_BG);
                     ui.scope_builder(
                         egui::UiBuilder::new().max_rect(title_rect),
@@ -583,7 +584,7 @@ impl eframe::App for WhenAmpApp {
                             ui.set_width(CHASSIS_WIDTH - 16.0);
 
                             // LCD row: time+badges on the left, visualizer+marquee on the right.
-                            let lcd_size = Vec2::new(CHASSIS_WIDTH - 16.0, 84.0);
+                            let lcd_size = Vec2::new(CHASSIS_WIDTH - 16.0, 104.0);
                             let (lcd_rect, _) = ui.allocate_exact_size(lcd_size, Sense::hover());
                             bevel_rect(ui, lcd_rect, LCD_PANEL_BG, false);
 
@@ -881,43 +882,58 @@ impl eframe::App for WhenAmpApp {
                             });
                         });
                     });
-                    ui.add_space(8.0);
-                });
 
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.set_width(CHASSIS_WIDTH);
-                    ui.label(
-                        egui::RichText::new(
-                            "SPACE = PLAY/PAUSE  ·  EJECT LOADS A LOCAL FILE",
-                        )
-                        .font(silkscreen_font(8.0))
-                        .color(STATUS_GRAY),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.set_width(CHASSIS_WIDTH - 16.0);
                         ui.label(
-                            egui::RichText::new(if has_song { "LOCAL FILE" } else { "NO FILE" })
+                            egui::RichText::new("SPACE = PLAY/PAUSE  ·  EJECT LOADS A LOCAL FILE")
                                 .font(silkscreen_font(8.0))
                                 .color(STATUS_GRAY),
                         );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(if has_song { "LOCAL FILE" } else { "NO FILE" })
+                                    .font(silkscreen_font(8.0))
+                                    .color(STATUS_GRAY),
+                            );
+                        });
                     });
+                    ui.add_space(6.0);
                 });
-            });
+
+            // Snap the (undecorated, non-resizable) window to exactly fit the
+            // chassis, so there's no leftover background around it.
+            let desired_size = chassis_response.response.rect.size();
+            if self
+                .last_window_size
+                .is_none_or(|last| (last - desired_size).length() > 0.5)
+            {
+                self.last_window_size = Some(desired_size);
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::InnerSize(desired_size));
+            }
 
             self.viz_bars = player.sample_visualizer();
 
             if has_song {
                 ui.ctx().request_repaint_after(Duration::from_millis(33));
             }
-        });
+        }
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        FACE.to_normalized_gamma_f32()
     }
 }
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([600.0, 340.0])
-            .with_resizable(false),
+            .with_inner_size([566.0, 260.0])
+            .with_resizable(false)
+            .with_decorations(false)
+            .with_transparent(false),
         ..Default::default()
     };
 

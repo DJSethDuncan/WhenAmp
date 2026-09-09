@@ -35,8 +35,13 @@ Shuffle are visual toggles carried over from the mockup with no playlist or
 audio-panning behavior behind them yet (no playlist exists to shuffle, and
 stereo balance would need a custom per-channel gain source). Prev/Next
 restart the current track, matching the mockup's own single-file fallback
-behavior. The visualizer is a real-time amplitude bar meter fed by a tap on
-the decoded audio stream, not a full FFT spectrum analyzer.
+behavior. The visualizer is a real-time FFT spectrum analyzer (bass on the
+left, treble on the right), fed by a mono downmix tap on the decoded audio
+stream.
+
+The window is undecorated (no native title bar) and sized to exactly fit
+the chassis; the in-app title strip is the drag handle, and its "x" button
+is the only way to close the window.
 
 ## Fonts
 
@@ -52,4 +57,4 @@ All embedded in the binary under `assets/fonts/`.
 ## Status
 
 Phase 1: load / play / pause / stop / seek with a draggable progress bar
-and a real-time visualizer, no playlist support yet.
+and a real-time FFT visualizer, no playlist support yet.

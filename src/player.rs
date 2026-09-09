@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -11,11 +12,12 @@ use rodio::{
     stream::{DeviceSinkBuilder, MixerDeviceSink},
     ChannelCount, Decoder, SampleRate, Source,
 };
+use rustfft::{num_complex::Complex, Fft, FftPlanner};
 
 /// Number of bars the visualizer displays.
 pub const VISUALIZER_BARS: usize = 28;
-/// How many times per second the 28 bars sweep once, when picking sample groupings.
-const VISUALIZER_SWEEP_HZ: usize = 15;
+/// Samples per FFT window (power of two). At 44.1kHz this is ~23ms of audio.
+const FFT_SIZE: usize = 1024;
 const DEFAULT_VOLUME: f32 = 0.78;
 
 /// Metadata about the currently loaded track beyond title/duration.
@@ -34,7 +36,10 @@ pub struct Player {
     track_title: Option<String>,
     track_info: TrackInfo,
     volume: f32,
-    visualizer: Arc<Mutex<[f32; VISUALIZER_BARS]>>,
+    sample_buffer: Arc<Mutex<VecDeque<f32>>>,
+    visualizer_sample_rate: u32,
+    visualizer_bars: [f32; VISUALIZER_BARS],
+    fft: Arc<dyn Fft<f32>>,
 }
 
 impl Player {
@@ -43,6 +48,7 @@ impl Player {
             .map_err(|err| anyhow::anyhow!("{err}"))?
             .open_stream()
             .map_err(|err| anyhow::anyhow!("{err}"))?;
+        let fft = FftPlanner::new().plan_fft_forward(FFT_SIZE);
         Ok(Self {
             _device_sink: device_sink,
             player: None,
@@ -51,7 +57,10 @@ impl Player {
             track_title: None,
             track_info: TrackInfo::default(),
             volume: DEFAULT_VOLUME,
-            visualizer: Arc::new(Mutex::new([0.0; VISUALIZER_BARS])),
+            sample_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(FFT_SIZE))),
+            visualizer_sample_rate: 0,
+            visualizer_bars: [0.0; VISUALIZER_BARS],
+            fft,
         })
     }
 
@@ -103,18 +112,61 @@ impl Player {
         }
     }
 
-    /// A snapshot of the 28 visualizer bars (0.0..=1.0), decaying each time it's sampled.
-    /// Call once per UI frame.
-    pub fn sample_visualizer(&self) -> [f32; VISUALIZER_BARS] {
-        let mut buckets = self
-            .visualizer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot = *buckets;
-        for bucket in buckets.iter_mut() {
-            *bucket *= 0.6;
+    /// A snapshot of the 28 visualizer bars (0.0..=1.0), bass on the left
+    /// through treble on the right, computed via FFT over the most recent
+    /// audio samples. Smooths against the previous call's result. Call once
+    /// per UI frame.
+    pub fn sample_visualizer(&mut self) -> [f32; VISUALIZER_BARS] {
+        let is_playing = self
+            .player
+            .as_ref()
+            .is_some_and(|player| !player.is_paused());
+
+        let samples: Vec<f32> = if is_playing {
+            let buffer = self
+                .sample_buffer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            buffer.iter().copied().collect()
+        } else {
+            Vec::new()
+        };
+
+        if samples.len() < FFT_SIZE / 4 || self.visualizer_sample_rate == 0 {
+            for bar in &mut self.visualizer_bars {
+                *bar *= 0.75;
+            }
+            return self.visualizer_bars;
         }
-        snapshot
+
+        let mut spectrum_input = vec![Complex::new(0.0_f32, 0.0); FFT_SIZE];
+        let start = samples.len().saturating_sub(FFT_SIZE);
+        let windowed = &samples[start..];
+        let n = windowed.len();
+        for (i, &sample) in windowed.iter().enumerate() {
+            let window = if n > 1 {
+                0.5 - 0.5 * ((std::f32::consts::TAU * i as f32) / (n as f32 - 1.0)).cos()
+            } else {
+                1.0
+            };
+            spectrum_input[i] = Complex::new(sample * window, 0.0);
+        }
+        self.fft.process(&mut spectrum_input);
+
+        let bands = visualizer_band_edges(self.visualizer_sample_rate as f32, FFT_SIZE);
+        for (bar, &(lo, hi)) in self.visualizer_bars.iter_mut().zip(bands.iter()) {
+            let hi = hi.max(lo + 1);
+            let peak = spectrum_input[lo..hi]
+                .iter()
+                .map(|c| c.norm())
+                .fold(0.0_f32, f32::max);
+            // Compress magnitude into a 0..1 display range; tuned empirically
+            // against typical music levels rather than derived from a fixed
+            // reference (there is no calibrated dBFS target here).
+            let level = (peak / (FFT_SIZE as f32 * 0.5)).sqrt().min(1.0);
+            *bar = *bar * 0.45 + level * 0.55;
+        }
+        self.visualizer_bars
     }
 
     pub fn load(&mut self, path: PathBuf) -> anyhow::Result<()> {
@@ -129,15 +181,15 @@ impl Player {
             .and_then(|d| std::fs::metadata(&path).ok().map(|m| (m.len(), d)))
             .map(|(bytes, d)| ((bytes as f64 * 8.0) / d.as_secs_f64() / 1000.0).round() as u32);
 
-        self.visualizer = Arc::new(Mutex::new([0.0; VISUALIZER_BARS]));
-        let group_size = ((sample_rate.get() as usize * channels.get() as usize)
-            / (VISUALIZER_BARS * VISUALIZER_SWEEP_HZ))
-            .max(1);
+        self.sample_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(FFT_SIZE)));
+        self.visualizer_sample_rate = sample_rate.get();
+        self.visualizer_bars = [0.0; VISUALIZER_BARS];
         let tapped = VisualizerTap {
             inner: source,
-            buckets: self.visualizer.clone(),
-            counter: 0,
-            group_size,
+            buffer: self.sample_buffer.clone(),
+            channels: channels.get() as usize,
+            frame_acc: 0.0,
+            frame_pos: 0,
         };
 
         let player = rodio::Player::connect_new(self._device_sink.mixer());
@@ -178,14 +230,16 @@ impl Player {
     }
 }
 
-/// Wraps a [`Source`], feeding each sample's magnitude into a shared set of
-/// visualizer buckets as it plays. Runs on rodio's audio thread, so bucket
-/// updates use a non-blocking lock attempt to never stall playback.
+/// Wraps a [`Source`], downmixing each frame to mono and feeding it into a
+/// shared ring buffer as it plays, for the UI thread to run an FFT over.
+/// Runs on rodio's audio thread, so buffer updates use a non-blocking lock
+/// attempt to never stall playback.
 struct VisualizerTap<S> {
     inner: S,
-    buckets: Arc<Mutex<[f32; VISUALIZER_BARS]>>,
-    counter: usize,
-    group_size: usize,
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+    channels: usize,
+    frame_acc: f32,
+    frame_pos: usize,
 }
 
 impl<S: Source> Iterator for VisualizerTap<S> {
@@ -193,12 +247,17 @@ impl<S: Source> Iterator for VisualizerTap<S> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let sample = self.inner.next()?;
-        let idx = (self.counter / self.group_size) % VISUALIZER_BARS;
-        self.counter = self.counter.wrapping_add(1);
-        if let Ok(mut buckets) = self.buckets.try_lock() {
-            let magnitude = sample.abs();
-            if magnitude > buckets[idx] {
-                buckets[idx] = magnitude;
+        self.frame_acc += sample;
+        self.frame_pos += 1;
+        if self.frame_pos >= self.channels {
+            let mono = self.frame_acc / self.channels as f32;
+            self.frame_acc = 0.0;
+            self.frame_pos = 0;
+            if let Ok(mut buffer) = self.buffer.try_lock() {
+                buffer.push_back(mono);
+                while buffer.len() > FFT_SIZE {
+                    buffer.pop_front();
+                }
             }
         }
         Some(sample)
@@ -207,6 +266,26 @@ impl<S: Source> Iterator for VisualizerTap<S> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
     }
+}
+
+/// Log-spaced FFT bin ranges (bass to treble) for each visualizer bar.
+fn visualizer_band_edges(sample_rate: f32, fft_size: usize) -> [(usize, usize); VISUALIZER_BARS] {
+    let nyquist = sample_rate / 2.0;
+    let min_freq = (sample_rate / fft_size as f32).max(20.0);
+    let max_freq = nyquist.max(min_freq * 2.0);
+    let ratio = max_freq / min_freq;
+
+    let bin_at = |bar_index: usize| -> usize {
+        let t = bar_index as f32 / VISUALIZER_BARS as f32;
+        let freq = min_freq * ratio.powf(t);
+        (((freq * fft_size as f32) / sample_rate).round() as usize).min(fft_size / 2)
+    };
+
+    std::array::from_fn(|i| {
+        let lo = bin_at(i);
+        let hi = bin_at(i + 1).max(lo + 1);
+        (lo, hi)
+    })
 }
 
 impl<S: Source> Source for VisualizerTap<S> {
@@ -272,6 +351,40 @@ mod tests {
         file.write_all(b"data").unwrap();
         file.write_all(&data_size.to_le_bytes()).unwrap();
         file.write_all(&vec![0u8; data_size as usize]).unwrap();
+    }
+
+    /// Writes a single-frequency sine tone as a 16-bit mono WAV, for testing
+    /// the visualizer's frequency-to-bar mapping against a known input.
+    fn write_tone_wav(path: &Path, freq_hz: f32, duration_secs: f32) {
+        let sample_rate: u32 = 44100;
+        let channels: u16 = 1;
+        let bits_per_sample: u16 = 16;
+        let num_samples = (sample_rate as f32 * duration_secs) as u32;
+        let data_size = num_samples * channels as u32 * (bits_per_sample as u32 / 8);
+        let byte_rate = sample_rate * channels as u32 * (bits_per_sample as u32 / 8);
+        let block_align = channels * (bits_per_sample / 8);
+        let chunk_size = 36 + data_size;
+
+        let mut file = File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&chunk_size.to_le_bytes()).unwrap();
+        file.write_all(b"WAVE").unwrap();
+        file.write_all(b"fmt ").unwrap();
+        file.write_all(&16u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&channels.to_le_bytes()).unwrap();
+        file.write_all(&sample_rate.to_le_bytes()).unwrap();
+        file.write_all(&byte_rate.to_le_bytes()).unwrap();
+        file.write_all(&block_align.to_le_bytes()).unwrap();
+        file.write_all(&bits_per_sample.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&data_size.to_le_bytes()).unwrap();
+        for i in 0..num_samples {
+            let t = i as f32 / sample_rate as f32;
+            let sample = (std::f32::consts::TAU * freq_hz * t).sin();
+            file.write_all(&((sample * i16::MAX as f32) as i16).to_le_bytes())
+                .unwrap();
+        }
     }
 
     /// Skips a test rather than failing when no audio output device is available
@@ -343,6 +456,42 @@ mod tests {
         let info = player.track_info();
         assert_eq!(info.sample_rate_hz, Some(44100));
         assert_eq!(info.channels, Some(1));
+    }
+
+    #[test]
+    fn visualizer_band_edges_are_monotonic_bass_to_treble() {
+        let bands = visualizer_band_edges(44100.0, FFT_SIZE);
+        for pair in bands.windows(2) {
+            let (_, prev_hi) = pair[0];
+            let (next_lo, next_hi) = pair[1];
+            assert!(next_lo >= prev_hi.saturating_sub(1), "bands overlap: {pair:?}");
+            assert!(next_hi <= FFT_SIZE / 2, "band exceeds Nyquist bin: {pair:?}");
+            assert!(next_lo < next_hi, "empty band: {pair:?}");
+        }
+    }
+
+    #[test]
+    fn visualizer_puts_bass_energy_in_the_left_bars() {
+        let Some(mut player) = test_player() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bass_tone.wav");
+        write_tone_wav(&path, 110.0, 2.0); // low A, clearly bass
+        player.load(path).unwrap();
+        player.play();
+        std::thread::sleep(Duration::from_millis(200));
+
+        let bars = player.sample_visualizer();
+        let bass = bars[..4].iter().copied().fold(0.0_f32, f32::max);
+        let treble = bars[VISUALIZER_BARS - 4..]
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        assert!(
+            bass > treble,
+            "expected bass tone to register on the left bars: bass={bass} treble={treble} bars={bars:?}"
+        );
     }
 
     #[test]
