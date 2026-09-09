@@ -45,6 +45,11 @@ height as the title strip (24px), same width as the full window, with its
 own window controls plus the time counter, transport, title ticker, and
 spectrum analyzer — the dash minimizes, and the "x" closes.
 
+The window is transparent with a 5px-rounded chassis painted on top; this
+is what makes the rounded corners actually visible (an opaque background
+the same color as the chassis would hide the rounding entirely) — the area
+outside the rounded shape shows the desktop through.
+
 ## Fonts
 
 - LCD time display: [DSEG7-Classic](https://github.com/keshikan/DSEG) by

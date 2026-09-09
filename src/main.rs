@@ -25,6 +25,7 @@ const LCD_FONT_NAME: &str = "dseg7-classic-bold";
 const SILKSCREEN_FONT_NAME: &str = "silkscreen";
 
 const CHASSIS_WIDTH: f32 = 560.0;
+const CHASSIS_CORNER_RADIUS: u8 = 5;
 const TITLE_MARQUEE_DELAY_SECS: f64 = 2.0;
 const TITLE_MARQUEE_SPEED_PPS: f32 = 40.0;
 const TITLE_MARQUEE_GAP: &str = "          "; // 10 chars
@@ -485,6 +486,7 @@ impl eframe::App for WhenAmpApp {
             // Outer chassis, sized to exactly fill the (undecorated) window.
             let chassis_frame = egui::Frame::new()
                 .fill(FACE)
+                .corner_radius(CHASSIS_CORNER_RADIUS)
                 .inner_margin(egui::Margin::same(3));
             let chassis_response = chassis_frame.show(ui, |ui| {
                     ui.set_width(CHASSIS_WIDTH);
@@ -497,7 +499,11 @@ impl eframe::App for WhenAmpApp {
                         if row_drag.drag_started() {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
-                        ui.painter().rect_filled(row_rect, 0.0, TITLE_BAR_BG);
+                        ui.painter().rect_filled(
+                            row_rect,
+                            egui::CornerRadius::same(CHASSIS_CORNER_RADIUS),
+                            TITLE_BAR_BG,
+                        );
 
                         ui.scope_builder(
                             egui::UiBuilder::new()
@@ -602,8 +608,12 @@ impl eframe::App for WhenAmpApp {
 
                                         ui.add_space(8.0);
                                         let spectrum_width = 90.0;
-                                        let ticker_width =
-                                            (ui.available_width() - spectrum_width - 8.0).max(40.0);
+                                        let spectrum_right_padding = 8.0;
+                                        let ticker_width = (ui.available_width()
+                                            - spectrum_width
+                                            - spectrum_right_padding
+                                            - 8.0)
+                                            .max(40.0);
                                         marquee_label(
                                             ui,
                                             &title_text,
@@ -618,6 +628,7 @@ impl eframe::App for WhenAmpApp {
                                             Vec2::new(spectrum_width, 16.0),
                                             &self.viz_bars,
                                         );
+                                        ui.add_space(spectrum_right_padding);
                                     },
                                 );
                             },
@@ -634,7 +645,16 @@ impl eframe::App for WhenAmpApp {
                     if title_drag.drag_started() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
-                    ui.painter().rect_filled(title_rect, 0.0, TITLE_BAR_BG);
+                    ui.painter().rect_filled(
+                        title_rect,
+                        egui::CornerRadius {
+                            nw: CHASSIS_CORNER_RADIUS,
+                            ne: CHASSIS_CORNER_RADIUS,
+                            sw: 0,
+                            se: 0,
+                        },
+                        TITLE_BAR_BG,
+                    );
                     ui.scope_builder(
                         egui::UiBuilder::new().max_rect(title_rect),
                         |ui| {
@@ -793,7 +813,7 @@ impl eframe::App for WhenAmpApp {
                                                 );
                                                 let pos = (kbps_rect.center()
                                                     - g.size() / 2.0
-                                                    - Vec2::new(0.0, 4.0))
+                                                    - Vec2::new(0.0, 1.0))
                                                 .round();
                                                 ui.painter().galley(pos, g, LCD_PANEL_BG);
 
@@ -815,7 +835,7 @@ impl eframe::App for WhenAmpApp {
                                                 );
                                                 let pos = (khz_rect.center()
                                                     - g.size() / 2.0
-                                                    - Vec2::new(0.0, 4.0))
+                                                    - Vec2::new(0.0, 1.0))
                                                 .round();
                                                 ui.painter().galley(pos, g, LCD_GREEN);
 
@@ -842,7 +862,7 @@ impl eframe::App for WhenAmpApp {
                                                 );
                                                 let pos = (st_rect.center()
                                                     - g.size() / 2.0
-                                                    - Vec2::new(0.0, 4.0))
+                                                    - Vec2::new(0.0, 1.0))
                                                 .round();
                                                 ui.painter().galley(pos, g, LCD_PANEL_BG);
                                             });
@@ -921,13 +941,13 @@ impl eframe::App for WhenAmpApp {
 
                             ui.add_space(8.0);
 
-                            // Seek bar, inset 5px further on each side than the
+                            // Seek bar, inset 10px further on each side than the
                             // content column so it doesn't crowd the chassis edge.
                             let seek_value = pos_secs / duration_secs;
                             let (seek_resp, seek_drag) = ui
                                 .horizontal(|ui| {
-                                    ui.add_space(5.0);
-                                    seek_bar(ui, Vec2::new(CHASSIS_WIDTH - 26.0, 10.0), seek_value)
+                                    ui.add_space(10.0);
+                                    seek_bar(ui, Vec2::new(CHASSIS_WIDTH - 36.0, 10.0), seek_value)
                                 })
                                 .inner;
                             if has_song {
@@ -1058,7 +1078,11 @@ impl eframe::App for WhenAmpApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        FACE.to_normalized_gamma_f32()
+        // Fully transparent: the chassis frame paints its own rounded FACE
+        // background, and letting the area outside that rounded shape stay
+        // transparent (rather than opaque FACE) is what makes the rounded
+        // corners actually visible against the desktop.
+        egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
 }
 
@@ -1068,7 +1092,7 @@ fn main() -> eframe::Result<()> {
             .with_inner_size([566.0, 260.0])
             .with_resizable(false)
             .with_decorations(false)
-            .with_transparent(false),
+            .with_transparent(true),
         ..Default::default()
     };
 
