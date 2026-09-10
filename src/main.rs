@@ -219,12 +219,16 @@ fn bevel_slider(ui: &mut Ui, size: Vec2, value: f32, fill: Color32) -> (Response
 /// A vertical bipolar slider for one EQ band: drag up to boost, down to cut,
 /// with a center tick at 0dB. Returns the response (double-click to reset)
 /// plus the value implied by the pointer while dragging.
+/// Same track thickness (6px) and handle size as `bevel_slider` (the
+/// volume/balance sliders), just rotated 90°: a vertical, bipolar track
+/// with a center tick at 0dB instead of a fill from one end.
 fn eq_band_slider(
     ui: &mut Ui,
-    size: Vec2,
+    height: f32,
     value_db: f32,
     range_db: f32,
 ) -> (Response, Option<f32>) {
+    let size = Vec2::new(6.0, height);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     bevel_rect(ui, rect, TRACK_BG, false);
 
@@ -234,15 +238,15 @@ fn eq_band_slider(
     // Center (0dB) tick.
     ui.painter().line_segment(
         [
-            egui::pos2(rect.left() + 2.0, center.y),
-            egui::pos2(rect.right() - 2.0, center.y),
+            egui::pos2(rect.left() - 3.0, center.y),
+            egui::pos2(rect.right() + 3.0, center.y),
         ],
         Stroke::new(1.0, INACTIVE),
     );
 
     let t = (value_db / range_db).clamp(-1.0, 1.0);
     let handle_center = egui::pos2(center.x, center.y - t * travel);
-    let handle_rect = Rect::from_center_size(handle_center, Vec2::new(rect.width() + 4.0, 8.0));
+    let handle_rect = Rect::from_center_size(handle_center, Vec2::new(rect.width() + 10.0, 12.0));
     bevel_rect(ui, handle_rect, FACE, true);
 
     let drag_value = response.dragged().then(|| {
@@ -592,12 +596,8 @@ fn eq_section(ui: &mut Ui, player: &mut Player, bottom_rounded: bool) -> egui::I
                     ui.vertical(|ui| {
                         ui.set_width(col_w);
                         ui.vertical_centered(|ui| {
-                            let (resp, drag) = eq_band_slider(
-                                ui,
-                                Vec2::new((col_w - 6.0).max(8.0), 84.0),
-                                gains[i],
-                                EQ_GAIN_RANGE_DB,
-                            );
+                            let (resp, drag) =
+                                eq_band_slider(ui, 84.0, gains[i], EQ_GAIN_RANGE_DB);
                             if let Some(v) = drag {
                                 player.set_eq_gain(i, v);
                             }
@@ -826,14 +826,18 @@ fn playlist_body(
             let mut to_remove = None;
 
             // Recessed panel behind the track list, matching the main LCD
-            // display's chrome — same gutter and inner padding.
+            // display's chrome — same gutter and inner padding. Measure the
+            // remaining height *before* entering the horizontal() wrapper:
+            // horizontal() gives its child only a single interact-row's
+            // worth of initial height (it doesn't inherit the parent's full
+            // available height, only its width), so querying
+            // available_height() from inside it was capping this panel to
+            // ~20px regardless of how tall the window actually was.
+            let panel_height = (ui.available_height() - 8.0).max(0.0);
             let panel_rect = ui
                 .horizontal(|ui| {
                     ui.add_space(GUTTER);
-                    let size = Vec2::new(
-                        CHASSIS_WIDTH - 2.0 * GUTTER,
-                        (ui.available_height() - 8.0).max(0.0),
-                    );
+                    let size = Vec2::new(CHASSIS_WIDTH - 2.0 * GUTTER, panel_height);
                     ui.allocate_exact_size(size, Sense::hover()).0
                 })
                 .inner;
