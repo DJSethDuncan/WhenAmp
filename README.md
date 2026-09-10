@@ -29,20 +29,19 @@ See `AGENTS.md` for the test-coverage expectations for new features.
 
 ## Playlist
 
-Click PL to open the playlist. Docked (the default, including every time
-you reopen it) it's fused directly into the player — literally the same OS
-window, rendered right below the chassis, resizing and moving as one piece
-with no separate window to manage or a close button (there's nothing
-sensible to "close" while it's part of the player). Drag its mini-titlebar
-(or click the pin) and it tears off into a genuinely separate, freely
-draggable floating window — now with its own close button, since it's
-independent. Drag that floating window back within ~10px of the player's
-bottom edge and it snaps back into the fused layout.
+Click PL to toggle the playlist on or off. It's fused directly into the
+player — literally the same OS window, rendered right below the chassis —
+with no separate window to manage and no close button of its own (PL is
+the only toggle). Opening it starts at a comfortably tall default size;
+grab the window's bottom edge or a bottom corner to resize it taller or
+shorter, and the track list fills whatever space is available. (An earlier
+version of this let the playlist tear off into its own floating window;
+that didn't work reliably, so it's parked for now — everything here is one
+window.)
 
-- Drop audio files on the **player** window to queue them right after the
-  current track and start playing the first one immediately.
-- Drop audio files on the **playlist** window to queue them the same way,
-  without changing playback.
+- Drop audio files on the player window to queue them right after the
+  current track and start playing the first one immediately (this also
+  works while the playlist is closed).
 - ADD opens a file picker (multi-select); SAVE/LOAD read and write M3U8
   playlists (`#EXTM3U`/`#EXTINF` with one path per line — the most broadly
   compatible playlist format); CLEAR empties the queue. Click a track to
