@@ -1678,9 +1678,18 @@ impl eframe::App for WhenAmpApp {
                     Vec2::new(window_width, min_height),
                 ));
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(
-                    Vec2::new(window_width, 4000.0),
+                    Vec2::new(window_width, 8000.0),
                 ));
-                let initial_height = fixed_height + INITIAL_PLAYLIST_HEIGHT;
+                // Open basically full-height: most of the current monitor,
+                // minus a margin for the OS menu bar/dock and some
+                // breathing room, rather than a small fixed default. Falls
+                // back to a generous fixed height if the monitor size isn't
+                // reported.
+                let initial_height = ui
+                    .ctx()
+                    .input(|i| i.viewport().monitor_size)
+                    .map(|monitor| (monitor.y - 80.0).max(min_height))
+                    .unwrap_or(fixed_height + INITIAL_PLAYLIST_HEIGHT);
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
                     Vec2::new(window_width, initial_height),
                 ));
@@ -1699,12 +1708,18 @@ impl eframe::App for WhenAmpApp {
             if self.playlist_open {
                 // Playlist showing: the window is user-resizable vertically,
                 // so only correct width drift (e.g. from dragging a bottom
-                // corner), preserving whatever height the user has set.
-                if let Some(inner) = ui.ctx().input(|i| i.viewport().inner_rect) {
-                    if (inner.width() - window_width).abs() > 0.5 {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                            Vec2::new(window_width, inner.height()),
-                        ));
+                // corner), preserving whatever height the user has set. Skip
+                // this entirely while a mouse button is held — resending
+                // InnerSize every frame during an active OS resize-drag
+                // fights the drag and caps how far it can actually go.
+                let dragging = ui.ctx().input(|i| i.pointer.any_down());
+                if !dragging {
+                    if let Some(inner) = ui.ctx().input(|i| i.viewport().inner_rect) {
+                        if (inner.width() - window_width).abs() > 0.5 {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                                Vec2::new(window_width, inner.height()),
+                            ));
+                        }
                     }
                 }
             } else {
