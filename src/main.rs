@@ -604,11 +604,17 @@ fn playlist_body(
             let mut to_remove = None;
 
             // Recessed panel behind the track list, matching the main LCD
-            // display's chrome, with a small margin to the window edges.
-            let panel_rect = {
-                let size = (ui.available_size() - Vec2::new(12.0, 6.0)).max(Vec2::ZERO);
-                ui.allocate_exact_size(size, Sense::hover()).0
-            };
+            // display's chrome — same 8px left/right margin as that panel.
+            let panel_rect = ui
+                .horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let size = Vec2::new(
+                        CHASSIS_WIDTH - 16.0,
+                        (ui.available_height() - 6.0).max(0.0),
+                    );
+                    ui.allocate_exact_size(size, Sense::hover()).0
+                })
+                .inner;
             bevel_rect(ui, panel_rect, LCD_PANEL_BG, false);
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(panel_rect.shrink(6.0)),
