@@ -58,6 +58,10 @@ struct WhenAmpApp {
     /// Used to detect the open/closed transition, to resize the window
     /// only at that moment rather than fighting the user's manual resize.
     playlist_was_open: bool,
+    /// The highlighted row in the playlist list, distinct from the track
+    /// that's actually playing (`playlist.current`) — single-click only
+    /// selects; double-click plays.
+    playlist_selected: Option<usize>,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -118,6 +122,12 @@ fn lcd_font(size: f32) -> egui::FontId {
 
 fn silkscreen_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name(SILKSCREEN_FONT_NAME.into()))
+}
+
+/// Same typeface as the track title/artist marquee (IBM Plex Mono) — more
+/// readable than Silkscreen at small sizes, for the KBPS/KHZ/STEREO badges.
+fn badge_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Proportional)
 }
 
 /// Draws a beveled rectangle: raised (button/chassis) or sunken (recessed
@@ -487,6 +497,7 @@ fn playlist_section(
     player: &mut Player,
     status: &mut String,
     is_playing: &mut bool,
+    selected: &mut Option<usize>,
 ) {
     egui::Frame::new()
         .fill(FACE)
@@ -515,7 +526,7 @@ fn playlist_section(
             });
 
             ui.add_space(6.0);
-            playlist_body(ui, playlist, player, status, is_playing);
+            playlist_body(ui, playlist, player, status, is_playing, selected);
         });
 }
 
@@ -527,6 +538,7 @@ fn playlist_body(
     player: &mut Player,
     status: &mut String,
     is_playing: &mut bool,
+    selected: &mut Option<usize>,
 ) {
     {
             ui.horizontal(|ui| {
@@ -602,11 +614,21 @@ fn playlist_body(
                 }
                 for (index, entry) in playlist.entries.iter().enumerate() {
                     let is_current = playlist.current == Some(index);
+                    let is_selected = *selected == Some(index);
                     ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{}.", index + 1))
+                                .font(badge_font(11.0))
+                                .color(DIM_GRAY),
+                        );
                         let color = if is_current { LCD_GREEN } else { INK };
                         let label = egui::RichText::new(&entry.display_name).color(color);
-                        if ui.selectable_label(is_current, label).clicked() {
+                        let response = ui.selectable_label(is_selected, label);
+                        if response.double_clicked() {
                             to_play = Some(index);
+                            *selected = Some(index);
+                        } else if response.clicked() {
+                            *selected = Some(index);
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
@@ -636,6 +658,11 @@ fn playlist_body(
             }
             if let Some(index) = to_remove {
                 playlist.remove(index);
+                *selected = match *selected {
+                    Some(s) if s == index => None,
+                    Some(s) if s > index => Some(s - 1),
+                    other => other,
+                };
             }
     }
 }
@@ -660,6 +687,7 @@ impl WhenAmpApp {
             playlist: Playlist::new(),
             playlist_open: false,
             playlist_was_open: false,
+            playlist_selected: None,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -1106,7 +1134,7 @@ impl eframe::App for WhenAmpApp {
                                                 ui.painter().rect_filled(kbps_rect, 0.0, LCD_GREEN);
                                                 let g = ui.painter().layout_no_wrap(
                                                     kbps_text,
-                                                    silkscreen_font(9.0),
+                                                    badge_font(10.0),
                                                     LCD_PANEL_BG,
                                                 );
                                                 let pos = (kbps_rect.center()
@@ -1128,7 +1156,7 @@ impl eframe::App for WhenAmpApp {
                                                 );
                                                 let g = ui.painter().layout_no_wrap(
                                                     khz_text,
-                                                    silkscreen_font(9.0),
+                                                    badge_font(10.0),
                                                     LCD_GREEN,
                                                 );
                                                 let pos = (khz_rect.center()
@@ -1155,7 +1183,7 @@ impl eframe::App for WhenAmpApp {
                                                 );
                                                 let g = ui.painter().layout_no_wrap(
                                                     "STEREO".to_string(),
-                                                    silkscreen_font(9.0),
+                                                    badge_font(10.0),
                                                     LCD_PANEL_BG,
                                                 );
                                                 let pos = (st_rect.center()
@@ -1377,6 +1405,7 @@ impl eframe::App for WhenAmpApp {
                         player,
                         &mut self.status,
                         &mut self.is_playing,
+                        &mut self.playlist_selected,
                     );
                 }
 

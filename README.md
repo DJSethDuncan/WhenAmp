@@ -44,8 +44,9 @@ window.)
   works while the playlist is closed).
 - ADD opens a file picker (multi-select); SAVE/LOAD read and write M3U8
   playlists (`#EXTM3U`/`#EXTINF` with one path per line — the most broadly
-  compatible playlist format); CLEAR empties the queue. Click a track to
-  play it now; × removes it.
+  compatible playlist format); CLEAR empties the queue. Each row shows its
+  position number; single-click only selects/highlights a track,
+  double-click plays it; × removes it.
 - Prev/Next walk the queue; with no playlist loaded they fall back to
   restarting the current track. When a track finishes, WhenAmp repeats it
   (if Repeat is on) or auto-advances to the next queued track, matching
