@@ -34,8 +34,9 @@ const GUTTER: f32 = 2.0;
 /// Smallest the playlist section can be squashed to (header + toolbar +
 /// a sliver of list).
 const MIN_PLAYLIST_HEIGHT: f32 = 110.0;
-/// How tall the playlist section starts at when first opened.
-const INITIAL_PLAYLIST_HEIGHT: f32 = 300.0;
+/// Extra space left below the playlist panel, beyond its usual inset, so
+/// the window's bottom resize edge has clear room to grab.
+const BOTTOM_RESIZE_MARGIN: f32 = 10.0;
 const CHASSIS_CORNER_RADIUS: u8 = 8;
 const TITLE_MARQUEE_DELAY_SECS: f64 = 2.0;
 const TITLE_MARQUEE_SPEED_PPS: f32 = 40.0;
@@ -70,6 +71,11 @@ struct WhenAmpApp {
     /// resize logic already uses, so no open/close transition tracking is
     /// needed here — the per-frame size diff picks it up naturally.
     eq_open: bool,
+    /// The window height the user last resized to while the playlist was
+    /// open, so reopening it (after toggling PL off and back on) restores
+    /// that size instead of resetting to the default. Not persisted across
+    /// app restarts — just for the lifetime of the process.
+    remembered_playlist_height: Option<f32>,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -833,7 +839,11 @@ fn playlist_body(
             // available height, only its width), so querying
             // available_height() from inside it was capping this panel to
             // ~20px regardless of how tall the window actually was.
-            let panel_height = (ui.available_height() - 8.0).max(0.0);
+            //
+            // Leave extra room below the panel (beyond the top gutter's 8px)
+            // as a plain FACE-colored strip — a visible, grabbable edge for
+            // the OS resize handle along the bottom of the window.
+            let panel_height = (ui.available_height() - 8.0 - BOTTOM_RESIZE_MARGIN).max(0.0);
             let panel_rect = ui
                 .horizontal(|ui| {
                     ui.add_space(GUTTER);
@@ -940,6 +950,7 @@ impl WhenAmpApp {
             playlist_was_open: false,
             playlist_selected: None,
             eq_open: false,
+            remembered_playlist_height: None,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -1684,16 +1695,16 @@ impl eframe::App for WhenAmpApp {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(
                     Vec2::new(window_width, 8000.0),
                 ));
-                // Open basically full-height: most of the current monitor,
-                // minus a margin for the OS menu bar/dock and some
-                // breathing room, rather than a small fixed default. Falls
-                // back to a generous fixed height if the monitor size isn't
-                // reported.
-                let initial_height = ui
-                    .ctx()
-                    .input(|i| i.viewport().monitor_size)
-                    .map(|monitor| (monitor.y - 80.0).max(min_height))
-                    .unwrap_or(fixed_height + INITIAL_PLAYLIST_HEIGHT);
+                // Default to the same height as the player itself (chassis
+                // plus EQ, if showing) rather than a tall or full-screen
+                // default — just enough to start, with MIN_PLAYLIST_HEIGHT's
+                // worth of track list visible. If the user has already
+                // resized the playlist open this session, restore that
+                // height instead of resetting it.
+                let initial_height = self
+                    .remembered_playlist_height
+                    .unwrap_or(min_height)
+                    .max(min_height);
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
                     Vec2::new(window_width, initial_height),
                 ));
@@ -1724,6 +1735,10 @@ impl eframe::App for WhenAmpApp {
                                 Vec2::new(window_width, inner.height()),
                             ));
                         }
+                        // Remember whatever height the user last settled on,
+                        // so toggling the playlist off and back on restores
+                        // it instead of resetting to the default.
+                        self.remembered_playlist_height = Some(inner.height());
                     }
                 }
             } else {
