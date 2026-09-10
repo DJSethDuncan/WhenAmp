@@ -36,7 +36,7 @@ const GUTTER: f32 = 2.0;
 const MIN_PLAYLIST_HEIGHT: f32 = 110.0;
 /// How tall the playlist section starts at when first opened.
 const INITIAL_PLAYLIST_HEIGHT: f32 = 300.0;
-const CHASSIS_CORNER_RADIUS: u8 = 5;
+const CHASSIS_CORNER_RADIUS: u8 = 8;
 const TITLE_MARQUEE_DELAY_SECS: f64 = 2.0;
 const TITLE_MARQUEE_SPEED_PPS: f32 = 40.0;
 const TITLE_MARQUEE_GAP: &str = "          "; // 10 chars
@@ -1301,7 +1301,8 @@ impl eframe::App for WhenAmpApp {
                                 );
                             });
 
-                            ui.add_space(8.0);
+                            // Matches the breathing room above this row.
+                            ui.add_space(12.0);
 
                             // Seek bar: the 20px handle is centered on the
                             // playhead, so at the extremes it overhangs the
