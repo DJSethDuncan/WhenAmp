@@ -29,15 +29,15 @@ See `AGENTS.md` for the test-coverage expectations for new features.
 
 ## Playlist
 
-Click PL to open the playlist as a separate window (a real OS window via
-egui's multi-viewport support, not embedded). It can dock to any of the
-player's four edges; opening it always starts docked, at wherever it was
-last docked (bottom, by default, the first time). While docked it's
-repositioned every frame to stay flush against that edge, so it moves with
-the player as if attached. Dragging the playlist's own titlebar undocks it
-immediately so it can move freely; drag it back within ~28px of any player
-edge and it snaps into place, docking to that edge. The small circle button
-on its titlebar toggles docked/undocked directly, without needing a drag.
+Click PL to open the playlist. Docked (the default, including every time
+you reopen it) it's fused directly into the player — literally the same OS
+window, rendered right below the chassis, resizing and moving as one piece
+with no separate window to manage or a close button (there's nothing
+sensible to "close" while it's part of the player). Drag its mini-titlebar
+(or click the pin) and it tears off into a genuinely separate, freely
+draggable floating window — now with its own close button, since it's
+independent. Drag that floating window back within ~10px of the player's
+bottom edge and it snaps back into the fused layout.
 
 - Drop audio files on the **player** window to queue them right after the
   current track and start playing the first one immediately.
@@ -60,7 +60,14 @@ Prev/Next/PL are wired to real playback and the playlist; EQ and Shuffle
 remain visual toggles carried over from the mockup with no backing behavior
 (no equalizer, and the queue is navigated in order). The visualizer is a
 real-time FFT spectrum analyzer (bass on the left, treble on the right),
-fed by a mono downmix tap on the decoded audio stream.
+fed by a mono downmix tap on the decoded audio stream, with gain tuned so
+bars use more of the available height and a treble-side boost compensating
+for music's natural high-frequency rolloff so the spectrum reads evenly
+across bass to treble.
+
+Track titles (in the LCD marquee and the playlist) show as "Artist -
+Title" when the file has an artist tag, falling back to just the title,
+then the filename.
 
 The window is undecorated (no native title bar) and sized to exactly fit
 the chassis; the in-app title strip is the drag handle. Its three window

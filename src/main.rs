@@ -52,7 +52,10 @@ struct WhenAmpApp {
     playlist_open: bool,
     playlist_was_open: bool,
     playlist_docked: bool,
-    playlist_dock_side: DockSide,
+    /// One-shot flag: true for the single frame after the playlist was torn
+    /// off the fused layout, so the newly spawned floating window can try
+    /// to pick up the same drag gesture.
+    playlist_just_undocked: bool,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -394,62 +397,19 @@ enum Direction {
     Next,
 }
 
-/// Which edge of the main player window the playlist window is docked to.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DockSide {
-    Top,
-    Bottom,
-    Left,
-    Right,
-}
-
+/// How close (in screen points) an undocked, dragged playlist window has to
+/// get to the player's bottom edge before it snaps back into the fused
+/// (docked) layout.
+const DOCK_SNAP_DISTANCE: f32 = 10.0;
+/// Gap left between the player and a freshly torn-off floating playlist.
 const DOCK_GAP: f32 = 6.0;
-const DOCK_SNAP_DISTANCE: f32 = 28.0;
 
-/// Where a docked playlist window should sit, flush against `side` of
-/// `main_rect`, given the playlist window's own current size.
-fn dock_position(main_rect: Rect, playlist_size: Vec2, side: DockSide) -> egui::Pos2 {
-    match side {
-        DockSide::Right => egui::pos2(main_rect.right() + DOCK_GAP, main_rect.top()),
-        DockSide::Left => egui::pos2(
-            main_rect.left() - playlist_size.x - DOCK_GAP,
-            main_rect.top(),
-        ),
-        DockSide::Bottom => egui::pos2(main_rect.left(), main_rect.bottom() + DOCK_GAP),
-        DockSide::Top => egui::pos2(
-            main_rect.left(),
-            main_rect.top() - playlist_size.y - DOCK_GAP,
-        ),
-    }
-}
-
-/// If `playlist_rect` is close enough to any edge of `main_rect`, returns
-/// that side — used to snap an undocked playlist window back into place
-/// while it's being dragged near the player.
-fn nearest_dock_side(main_rect: Rect, playlist_rect: Rect) -> Option<DockSide> {
-    let candidates = [
-        (
-            DockSide::Right,
-            (playlist_rect.left() - main_rect.right()).abs(),
-        ),
-        (
-            DockSide::Left,
-            (playlist_rect.right() - main_rect.left()).abs(),
-        ),
-        (
-            DockSide::Bottom,
-            (playlist_rect.top() - main_rect.bottom()).abs(),
-        ),
-        (
-            DockSide::Top,
-            (playlist_rect.bottom() - main_rect.top()).abs(),
-        ),
-    ];
-    candidates
-        .into_iter()
-        .filter(|(_, dist)| *dist <= DOCK_SNAP_DISTANCE)
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(side, _)| side)
+/// True once a floating playlist window, while being dragged, has come
+/// close enough to the player's bottom edge to snap back into place.
+fn should_snap_to_dock(main_rect: Rect, playlist_rect: Rect) -> bool {
+    let dx = (playlist_rect.left() - main_rect.left()).abs();
+    let dy = (playlist_rect.top() - main_rect.bottom()).abs();
+    dx <= DOCK_SNAP_DISTANCE && dy <= DOCK_SNAP_DISTANCE
 }
 
 /// Prev/Next: walks the playlist if one exists, otherwise falls back to
@@ -531,11 +491,12 @@ fn dropped_file_paths(ui: &Ui) -> Vec<PathBuf> {
 
 /// Draws the playlist window's contents: its own mini titlebar (dock toggle
 /// + close), an ADD/SAVE/LOAD/CLEAR toolbar, and the scrollable track list.
-fn playlist_window_contents(
+/// The floating (undocked) playlist window: its own titlebar with a
+/// dock-toggle and a close button, since it's a fully independent window.
+fn floating_playlist_contents(
     ui: &mut Ui,
     playlist: &mut Playlist,
     player: &mut Player,
-    docked: &mut bool,
     open: &mut bool,
     status: &mut String,
     is_playing: &mut bool,
@@ -552,10 +513,6 @@ fn playlist_window_contents(
                 Sense::click_and_drag(),
             );
             if title_drag.drag_started() {
-                // Dragging the playlist's own titlebar always undocks it —
-                // otherwise it would immediately snap back to the main
-                // window's side every frame.
-                *docked = false;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
             ui.painter().rect_filled(
@@ -570,28 +527,6 @@ fn playlist_window_contents(
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(title_rect), |ui| {
                 ui.horizontal(|ui| {
-                    ui.add_space(6.0);
-                    let (dock_rect, dock_resp) =
-                        ui.allocate_exact_size(Vec2::new(16.0, 14.0), Sense::click());
-                    bevel_rect(ui, dock_rect, FACE, true);
-                    if *docked {
-                        ui.painter().circle_filled(dock_rect.center(), 3.0, LCD_GREEN);
-                    } else {
-                        ui.painter().circle_stroke(
-                            dock_rect.center(),
-                            3.0,
-                            Stroke::new(1.0, INK),
-                        );
-                    }
-                    let dock_hover = if *docked {
-                        "Undock"
-                    } else {
-                        "Dock to player"
-                    };
-                    if dock_resp.on_hover_text(dock_hover).clicked() {
-                        *docked = !*docked;
-                    }
-
                     ui.add_space(6.0);
                     ui.label(
                         egui::RichText::new("PLAYLIST")
@@ -626,7 +561,81 @@ fn playlist_window_contents(
             });
 
             ui.add_space(6.0);
+            playlist_body(ui, playlist, player, status, is_playing, None);
+        });
+}
 
+/// The docked playlist section, fused directly into the main player window
+/// (rendered right below the chassis, same OS window). No close button —
+/// closing only exists as a concept for the floating window; dragging this
+/// mini-titlebar (or clicking its dock pin) tears it off into one instead.
+fn fused_playlist_section(
+    ui: &mut Ui,
+    playlist: &mut Playlist,
+    player: &mut Player,
+    docked: &mut bool,
+    status: &mut String,
+    is_playing: &mut bool,
+    just_undocked: &mut bool,
+) {
+    egui::Frame::new()
+        .fill(FACE)
+        .corner_radius(egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: CHASSIS_CORNER_RADIUS,
+            se: CHASSIS_CORNER_RADIUS,
+        })
+        .inner_margin(egui::Margin::same(3))
+        .show(ui, |ui| {
+            ui.set_width(CHASSIS_WIDTH);
+
+            let (title_rect, title_drag) =
+                ui.allocate_exact_size(Vec2::new(CHASSIS_WIDTH, 20.0), Sense::click_and_drag());
+            if title_drag.drag_started() {
+                *docked = false;
+                *just_undocked = true;
+            }
+            ui.painter().rect_filled(title_rect, 0.0, TITLE_BAR_BG);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(title_rect), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    let (dock_rect, dock_resp) =
+                        ui.allocate_exact_size(Vec2::new(16.0, 14.0), Sense::click());
+                    bevel_rect(ui, dock_rect, FACE, true);
+                    ui.painter().circle_filled(dock_rect.center(), 3.0, LCD_GREEN);
+                    if dock_resp.on_hover_text("Undock").clicked() {
+                        *docked = false;
+                        *just_undocked = true;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("PLAYLIST")
+                            .font(silkscreen_font(9.0))
+                            .color(LABEL_GRAY),
+                    );
+                });
+            });
+
+            ui.add_space(6.0);
+            playlist_body(ui, playlist, player, status, is_playing, Some(180.0));
+        });
+}
+
+/// The ADD/SAVE/LOAD/CLEAR toolbar plus the scrollable track list — shared
+/// between the fused and floating playlist presentations. `max_list_height`
+/// caps the list (used when fused, so the main window doesn't grow without
+/// bound); `None` lets it fill whatever space the floating window has.
+fn playlist_body(
+    ui: &mut Ui,
+    playlist: &mut Playlist,
+    player: &mut Player,
+    status: &mut String,
+    is_playing: &mut bool,
+    max_list_height: Option<f32>,
+) {
+    {
             ui.horizontal(|ui| {
                 if toggle_label_button(ui, "ADD", false, 42.0)
                     .on_hover_text("Add files")
@@ -688,7 +697,13 @@ fn playlist_window_contents(
 
             let mut to_play = None;
             let mut to_remove = None;
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut scroll_area = egui::ScrollArea::vertical();
+            if let Some(max_height) = max_list_height {
+                scroll_area = scroll_area.max_height(max_height);
+            } else {
+                scroll_area = scroll_area.auto_shrink([false, false]);
+            }
+            scroll_area.show(ui, |ui| {
                 if playlist.entries.is_empty() {
                     ui.label(
                         egui::RichText::new("Drop audio files here, or use ADD.")
@@ -733,7 +748,7 @@ fn playlist_window_contents(
             if let Some(index) = to_remove {
                 playlist.remove(index);
             }
-        });
+    }
 }
 
 impl WhenAmpApp {
@@ -757,7 +772,7 @@ impl WhenAmpApp {
             playlist_open: false,
             playlist_was_open: false,
             playlist_docked: true,
-            playlist_dock_side: DockSide::Bottom,
+            playlist_just_undocked: false,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -862,12 +877,29 @@ impl eframe::App for WhenAmpApp {
                 "LOAD".to_string()
             };
 
-            // Outer chassis, sized to exactly fill the (undecorated) window.
+            // When the playlist is docked, it's fused into this same window
+            // (rendered right below the chassis) rather than a separate one —
+            // so the chassis's own bottom corners stay flat where they meet it.
+            let show_fused_playlist = self.playlist_open && self.playlist_docked;
+
             let chassis_frame = egui::Frame::new()
                 .fill(FACE)
-                .corner_radius(CHASSIS_CORNER_RADIUS)
+                .corner_radius(if show_fused_playlist {
+                    egui::CornerRadius {
+                        nw: CHASSIS_CORNER_RADIUS,
+                        ne: CHASSIS_CORNER_RADIUS,
+                        sw: 0,
+                        se: 0,
+                    }
+                } else {
+                    egui::CornerRadius::same(CHASSIS_CORNER_RADIUS)
+                })
                 .inner_margin(egui::Margin::same(3));
-            let chassis_response = chassis_frame.show(ui, |ui| {
+
+            let combined_response = ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+
+                chassis_frame.show(ui, |ui| {
                     ui.set_width(CHASSIS_WIDTH);
 
                     if self.micro_mode {
@@ -1451,9 +1483,23 @@ impl eframe::App for WhenAmpApp {
                     ui.add_space(8.0);
                 });
 
+                if show_fused_playlist {
+                    fused_playlist_section(
+                        ui,
+                        &mut self.playlist,
+                        player,
+                        &mut self.playlist_docked,
+                        &mut self.status,
+                        &mut self.is_playing,
+                        &mut self.playlist_just_undocked,
+                    );
+                }
+            });
+
             // Snap the (undecorated, non-resizable) window to exactly fit the
-            // chassis, so there's no leftover background around it.
-            let desired_size = chassis_response.response.rect.size();
+            // chassis (plus the fused playlist section, if shown), so
+            // there's no leftover background around it.
+            let desired_size = combined_response.response.rect.size();
             if self
                 .last_window_size
                 .is_none_or(|last| (last - desired_size).length() > 0.5)
@@ -1463,61 +1509,57 @@ impl eframe::App for WhenAmpApp {
                     .send_viewport_cmd(egui::ViewportCommand::InnerSize(desired_size));
             }
 
-            // Reopening always starts docked, at wherever it was last docked.
+            // Reopening always starts docked (fused), at wherever it was
+            // last docked.
             if self.playlist_open && !self.playlist_was_open {
                 self.playlist_docked = true;
             }
             self.playlist_was_open = self.playlist_open;
 
-            if self.playlist_open {
-                const DEFAULT_PLAYLIST_SIZE: Vec2 = Vec2::new(260.0, 320.0);
+            // Undocked (or just torn off): a genuinely separate, freely
+            // draggable floating window.
+            if self.playlist_open && !self.playlist_docked {
                 let main_rect = ui.ctx().input(|i| i.viewport().outer_rect);
 
                 let mut builder = egui::ViewportBuilder::default()
                     .with_title("WhenAmp Playlist")
-                    .with_inner_size(DEFAULT_PLAYLIST_SIZE)
                     .with_min_inner_size([200.0, 160.0])
                     .with_resizable(true)
                     .with_decorations(false)
                     .with_transparent(true);
-                if self.playlist_docked {
+                // First frame after tearing off: appear right where the
+                // fused section just was, so nothing jumps.
+                if self.playlist_just_undocked {
                     if let Some(rect) = main_rect {
-                        builder = builder.with_position(dock_position(
-                            rect,
-                            DEFAULT_PLAYLIST_SIZE,
-                            self.playlist_dock_side,
-                        ));
+                        builder = builder
+                            .with_inner_size([CHASSIS_WIDTH + 6.0, 280.0])
+                            .with_position(egui::pos2(rect.left(), rect.bottom() + DOCK_GAP));
                     }
+                } else {
+                    builder = builder.with_inner_size([280.0, 320.0]);
                 }
 
                 let playlist = &mut self.playlist;
                 let playlist_docked = &mut self.playlist_docked;
-                let playlist_dock_side = &mut self.playlist_dock_side;
                 let playlist_open = &mut self.playlist_open;
                 let status = &mut self.status;
                 let is_playing = &mut self.is_playing;
+                let just_undocked = self.playlist_just_undocked;
 
                 ui.ctx().show_viewport_immediate(
                     egui::ViewportId::from_hash_of("whenamp-playlist"),
                     builder,
                     |ui, _class| {
+                        // Best-effort: continue the same drag gesture that
+                        // tore this window off, if the button's still down.
+                        if just_undocked && ui.input(|i| i.pointer.primary_down()) {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+
                         if let Some(main_rect) = main_rect {
-                            let own_rect = ui.ctx().input(|i| i.viewport().outer_rect);
-                            if *playlist_docked {
-                                if let Some(own_rect) = own_rect {
-                                    let pos = dock_position(
-                                        main_rect,
-                                        own_rect.size(),
-                                        *playlist_dock_side,
-                                    );
-                                    ui.ctx().send_viewport_cmd(
-                                        egui::ViewportCommand::OuterPosition(pos),
-                                    );
-                                }
-                            } else if let Some(own_rect) = own_rect {
-                                if let Some(side) = nearest_dock_side(main_rect, own_rect) {
+                            if let Some(own_rect) = ui.ctx().input(|i| i.viewport().outer_rect) {
+                                if should_snap_to_dock(main_rect, own_rect) {
                                     *playlist_docked = true;
-                                    *playlist_dock_side = side;
                                 }
                             }
                         }
@@ -1527,17 +1569,17 @@ impl eframe::App for WhenAmpApp {
                             queue_tracks(playlist, dropped);
                         }
 
-                        playlist_window_contents(
+                        floating_playlist_contents(
                             ui,
                             playlist,
                             player,
-                            playlist_docked,
                             playlist_open,
                             status,
                             is_playing,
                         );
                     },
                 );
+                self.playlist_just_undocked = false;
             }
 
             self.viz_bars = player.sample_visualizer();
@@ -1587,5 +1629,26 @@ mod tests {
         assert_eq!(format_duration(Duration::from_secs(5)), "00:05");
         assert_eq!(format_duration(Duration::from_secs(65)), "01:05");
         assert_eq!(format_duration(Duration::from_secs(3661)), "61:01");
+    }
+
+    #[test]
+    fn snaps_only_when_within_distance_of_the_bottom_edge() {
+        let main_rect = Rect::from_min_size(egui::pos2(100.0, 100.0), Vec2::new(566.0, 240.0));
+
+        // Flush against the bottom, same x: should snap.
+        let flush = Rect::from_min_size(egui::pos2(100.0, 340.0), Vec2::new(280.0, 320.0));
+        assert!(should_snap_to_dock(main_rect, flush));
+
+        // Just within the snap distance.
+        let close = Rect::from_min_size(egui::pos2(102.0, 348.0), Vec2::new(280.0, 320.0));
+        assert!(should_snap_to_dock(main_rect, close));
+
+        // Too far below.
+        let far_below = Rect::from_min_size(egui::pos2(100.0, 400.0), Vec2::new(280.0, 320.0));
+        assert!(!should_snap_to_dock(main_rect, far_below));
+
+        // Right distance vertically, but shifted too far horizontally.
+        let shifted = Rect::from_min_size(egui::pos2(200.0, 340.0), Vec2::new(280.0, 320.0));
+        assert!(!should_snap_to_dock(main_rect, shifted));
     }
 }

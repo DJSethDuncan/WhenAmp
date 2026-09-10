@@ -19,6 +19,12 @@ use rustfft::{num_complex::Complex, Fft, FftPlanner};
 pub const VISUALIZER_BARS: usize = 28;
 /// Samples per FFT window (power of two). At 44.1kHz this is ~23ms of audio.
 const FFT_SIZE: usize = 1024;
+/// Overall visualizer gain, so bars use more of the available height.
+const VISUALIZER_GAIN: f32 = 2.6;
+/// Extra gain applied at the treble end (linearly ramped in from the bass
+/// end, which gets 1.0x) to counteract music's natural high-frequency
+/// rolloff, so bars read more evenly across the spectrum.
+const VISUALIZER_TREBLE_BOOST: f32 = 4.0;
 const DEFAULT_VOLUME: f32 = 0.78;
 /// 0.0 = full left, 0.5 = center, 1.0 = full right.
 const DEFAULT_BALANCE: f32 = 0.5;
@@ -171,16 +177,30 @@ impl Player {
         self.fft.process(&mut spectrum_input);
 
         let bands = visualizer_band_edges(self.visualizer_sample_rate as f32, FFT_SIZE);
-        for (bar, &(lo, hi)) in self.visualizer_bars.iter_mut().zip(bands.iter()) {
+        let bar_count = self.visualizer_bars.len();
+        for (i, (bar, &(lo, hi))) in self
+            .visualizer_bars
+            .iter_mut()
+            .zip(bands.iter())
+            .enumerate()
+        {
             let hi = hi.max(lo + 1);
             let peak = spectrum_input[lo..hi]
                 .iter()
                 .map(|c| c.norm())
                 .fold(0.0_f32, f32::max);
-            // Compress magnitude into a 0..1 display range; tuned empirically
-            // against typical music levels rather than derived from a fixed
-            // reference (there is no calibrated dBFS target here).
-            let level = (peak / (FFT_SIZE as f32 * 0.5)).sqrt().min(1.0);
+            // Real music rolls off toward high frequencies, so without
+            // compensation the treble bars read consistently lower than
+            // bass; ramp in extra gain toward the treble end to even that
+            // out, on top of an overall gain so bars use more of the
+            // available height. Both tuned empirically against typical
+            // music levels rather than derived from a fixed reference
+            // (there is no calibrated dBFS target here).
+            let treble_t = i as f32 / (bar_count - 1).max(1) as f32;
+            let treble_gain = 1.0 + treble_t * (VISUALIZER_TREBLE_BOOST - 1.0);
+            let level = (peak / (FFT_SIZE as f32 * 0.5) * VISUALIZER_GAIN * treble_gain)
+                .sqrt()
+                .min(1.0);
             *bar = *bar * 0.45 + level * 0.55;
         }
         self.visualizer_bars
@@ -409,11 +429,18 @@ impl<S: Source> Source for BalanceTap<S> {
 /// Reads the track title from the file's metadata tag, if one is present.
 fn read_title_tag(path: &Path) -> Option<String> {
     let tagged_file = Probe::open(path).ok()?.read().ok()?;
-    let title = tagged_file
-        .primary_tag()
-        .or_else(|| tagged_file.first_tag())?
-        .title()?;
-    Some(title.to_string())
+    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
+    let title = tag.title()?;
+    Some(format_track_title(&title, tag.artist().as_deref()))
+}
+
+/// "Artist - Title" when an artist tag is present and non-blank, otherwise
+/// just the title.
+fn format_track_title(title: &str, artist: Option<&str>) -> String {
+    match artist {
+        Some(artist) if !artist.trim().is_empty() => format!("{artist} - {title}"),
+        _ => title.to_string(),
+    }
 }
 
 /// The metadata title if present, otherwise the filename. Usable without
@@ -693,6 +720,16 @@ mod tests {
         player.set_volume(0.3);
         player.stop();
         assert_eq!(player.volume(), 0.3);
+    }
+
+    #[test]
+    fn format_track_title_prefixes_the_artist_when_present() {
+        assert_eq!(
+            format_track_title("Static Bloom", Some("Nightjar")),
+            "Nightjar - Static Bloom"
+        );
+        assert_eq!(format_track_title("Static Bloom", None), "Static Bloom");
+        assert_eq!(format_track_title("Static Bloom", Some("   ")), "Static Bloom");
     }
 
     #[test]
