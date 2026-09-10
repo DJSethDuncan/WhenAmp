@@ -1472,8 +1472,13 @@ impl eframe::App for WhenAmpApp {
                 }
             } else {
                 // No playlist: snap the (non-resizable) window to exactly
-                // fit the chassis, so there's no leftover background.
-                let desired_size = combined_response.response.rect.size();
+                // fit the chassis. Use the chassis-only height captured
+                // above rather than the drawn rect's size — on the very
+                // frame the playlist closes, that rect still reflects the
+                // stale (tall) layout from before the toggle, which would
+                // otherwise send the wrong size for one frame and then
+                // correct it the next, causing a visible flicker.
+                let desired_size = Vec2::new(window_width, combined_response.inner);
                 if self
                     .last_window_size
                     .is_none_or(|last| (last - desired_size).length() > 0.5)
