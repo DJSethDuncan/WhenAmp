@@ -130,6 +130,28 @@ fn badge_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Proportional)
 }
 
+/// One LCD status badge (KBPS/KHZ/STEREO). All three share the same pill
+/// shape; `lit` toggles between the bright indicator-lamp state and a dim
+/// "unlit lamp" state (dark green fill, faint green text) so an off badge
+/// still reads as the same component rather than a different one.
+fn lcd_badge(ui: &mut Ui, text: &str, width: f32, lit: bool) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 14.0), Sense::hover());
+    let (fill, text_color) = if lit {
+        (LCD_GREEN, LCD_PANEL_BG)
+    } else {
+        (
+            LCD_GREEN.gamma_multiply(0.15),
+            LCD_GREEN.gamma_multiply(0.45),
+        )
+    };
+    ui.painter().rect_filled(rect, 0.0, fill);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), badge_font(10.0), text_color);
+    let pos = (rect.center() - galley.size() / 2.0 - Vec2::new(0.0, 1.0)).round();
+    ui.painter().galley(pos, galley, text_color);
+}
+
 /// Draws a beveled rectangle: raised (button/chassis) or sunken (recessed
 /// panel/track), matching the mockup's inset/outset box-shadow chrome.
 fn bevel_rect(ui: &Ui, rect: Rect, fill: Color32, raised: bool) {
@@ -507,7 +529,12 @@ fn playlist_section(
             sw: CHASSIS_CORNER_RADIUS,
             se: CHASSIS_CORNER_RADIUS,
         })
-        .inner_margin(egui::Margin::same(3))
+        .inner_margin(egui::Margin {
+            left: 3,
+            right: 3,
+            top: 0,
+            bottom: 3,
+        })
         .show(ui, |ui| {
             ui.set_width(CHASSIS_WIDTH);
 
@@ -516,7 +543,7 @@ fn playlist_section(
             ui.painter().rect_filled(title_rect, 0.0, TITLE_BAR_BG);
             ui.scope_builder(egui::UiBuilder::new().max_rect(title_rect), |ui| {
                 ui.horizontal(|ui| {
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new("PLAYLIST")
                             .font(silkscreen_font(9.0))
@@ -525,7 +552,7 @@ fn playlist_section(
                 });
             });
 
-            ui.add_space(6.0);
+            ui.add_space(8.0);
             playlist_body(ui, playlist, player, status, is_playing, selected);
         });
 }
@@ -542,6 +569,7 @@ fn playlist_body(
 ) {
     {
             ui.horizontal(|ui| {
+                ui.add_space(8.0);
                 if toggle_label_button(ui, "ADD", false, 42.0)
                     .on_hover_text("Add files")
                     .clicked()
@@ -598,27 +626,30 @@ fn playlist_body(
                 }
             });
 
-            ui.add_space(6.0);
+            ui.add_space(8.0);
 
             let mut to_play = None;
             let mut to_remove = None;
 
             // Recessed panel behind the track list, matching the main LCD
-            // display's chrome — same 8px left/right margin as that panel.
+            // display's chrome — same 8px margins and inner padding.
             let panel_rect = ui
                 .horizontal(|ui| {
                     ui.add_space(8.0);
                     let size = Vec2::new(
                         CHASSIS_WIDTH - 16.0,
-                        (ui.available_height() - 6.0).max(0.0),
+                        (ui.available_height() - 8.0).max(0.0),
                     );
                     ui.allocate_exact_size(size, Sense::hover()).0
                 })
                 .inner;
             bevel_rect(ui, panel_rect, LCD_PANEL_BG, false);
             ui.scope_builder(
-                egui::UiBuilder::new().max_rect(panel_rect.shrink(6.0)),
+                egui::UiBuilder::new().max_rect(panel_rect.shrink(8.0)),
                 |ui| {
+                    // Restore normal spacing for the list rows; the chassis
+                    // zeroes item_spacing for its fixed chrome.
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -835,7 +866,10 @@ impl eframe::App for WhenAmpApp {
                 .inner_margin(egui::Margin::same(3));
 
             let combined_response = ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
+                // All gaps in the chassis are explicit add_space calls;
+                // egui's default item_spacing would otherwise silently add
+                // ~8px between siblings on top of them, unevenly.
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
 
                 let chassis_response = chassis_frame.show(ui, |ui| {
                     ui.set_width(CHASSIS_WIDTH);
@@ -856,7 +890,7 @@ impl eframe::App for WhenAmpApp {
 
                         ui.scope_builder(
                             egui::UiBuilder::new()
-                                .max_rect(row_rect.shrink2(Vec2::new(6.0, 1.0))),
+                                .max_rect(row_rect.shrink2(Vec2::new(8.0, 1.0))),
                             |ui| {
                                 ui.with_layout(
                                     egui::Layout::left_to_right(egui::Align::Center),
@@ -880,7 +914,7 @@ impl eframe::App for WhenAmpApp {
                                             );
                                         }
 
-                                        ui.add_space(2.0);
+                                        ui.add_space(3.0);
                                         let (restore_rect, restore_resp) = ui.allocate_exact_size(
                                             Vec2::new(16.0, 14.0),
                                             Sense::click(),
@@ -897,7 +931,7 @@ impl eframe::App for WhenAmpApp {
                                             self.micro_mode = false;
                                         }
 
-                                        ui.add_space(2.0);
+                                        ui.add_space(3.0);
                                         let (close_rect, close_resp) = ui.allocate_exact_size(
                                             Vec2::new(16.0, 14.0),
                                             Sense::click(),
@@ -939,6 +973,7 @@ impl eframe::App for WhenAmpApp {
                                                 player.play();
                                                 self.is_playing = true;
                                             }
+                                            ui.add_space(3.0);
                                             if icon_button_sized(ui, Icon::Pause, btn_size)
                                                 .on_hover_text("Pause")
                                                 .clicked()
@@ -946,6 +981,7 @@ impl eframe::App for WhenAmpApp {
                                                 player.pause();
                                                 self.is_playing = false;
                                             }
+                                            ui.add_space(3.0);
                                             if icon_button_sized(ui, Icon::Stop, btn_size)
                                                 .on_hover_text("Stop")
                                                 .clicked()
@@ -1024,24 +1060,16 @@ impl eframe::App for WhenAmpApp {
                                     silkscreen_font(10.0),
                                     LABEL_GRAY,
                                 );
-                                let remaining =
-                                    title_rect.width() - 8.0 - 8.0 - 4.0 - 3.0 * 20.0 - 16.0;
-                                let text_x = title_rect.left()
-                                    + 8.0
-                                    + 8.0
-                                    + 4.0
-                                    + (remaining - label_galley.size().x).max(0.0) / 2.0;
-                                ui.painter().galley(
-                                    egui::pos2(
-                                        text_x,
-                                        title_rect.center().y - label_galley.size().y / 2.0,
-                                    ),
-                                    label_galley,
-                                    LABEL_GRAY,
-                                );
+                                // Center the title on the full bar; the LED
+                                // and window buttons are visually light
+                                // enough that true centering reads best.
+                                let pos = (title_rect.center()
+                                    - label_galley.size() / 2.0)
+                                    .round();
+                                ui.painter().galley(pos, label_galley, LABEL_GRAY);
 
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.add_space(4.0);
+                                    ui.add_space(8.0);
                                     let (close_rect, close_resp) = ui
                                         .allocate_exact_size(Vec2::new(16.0, 14.0), Sense::click());
                                     bevel_rect(ui, close_rect, FACE, !close_resp.is_pointer_button_down_on());
@@ -1108,38 +1136,47 @@ impl eframe::App for WhenAmpApp {
                                     ui.horizontal(|ui| {
                                         ui.vertical(|ui| {
                                             ui.set_width(178.0);
-                                            let time_resp = ui.horizontal(|ui| {
-                                                let galley = ui.painter().layout_no_wrap(
-                                                    lcd_text.clone(),
-                                                    lcd_font(40.0),
-                                                    LCD_GREEN,
-                                                );
-                                                let (rect, resp) = ui.allocate_exact_size(
-                                                    galley.size(),
-                                                    Sense::click(),
-                                                );
-                                                ui.painter().galley(
-                                                    rect.left_top(),
-                                                    galley,
-                                                    LCD_GREEN,
-                                                );
-                                                ui.add_space(4.0);
-                                                ui.label(
-                                                    egui::RichText::new(if self.remaining_mode {
-                                                        "REM"
-                                                    } else {
-                                                        "ELAPSED"
-                                                    })
-                                                    .font(silkscreen_font(9.0))
-                                                    .color(LCD_GREEN.gamma_multiply(0.6)),
-                                                );
-                                                resp
-                                            });
+                                            // Bottom-align so the mode label
+                                            // sits on the digits' baseline.
+                                            let time_resp = ui.with_layout(
+                                                egui::Layout::left_to_right(egui::Align::Max),
+                                                |ui| {
+                                                    let galley = ui.painter().layout_no_wrap(
+                                                        lcd_text.clone(),
+                                                        lcd_font(40.0),
+                                                        LCD_GREEN,
+                                                    );
+                                                    let (rect, resp) = ui.allocate_exact_size(
+                                                        galley.size(),
+                                                        Sense::click(),
+                                                    );
+                                                    ui.painter().galley(
+                                                        rect.left_top(),
+                                                        galley,
+                                                        LCD_GREEN,
+                                                    );
+                                                    ui.add_space(6.0);
+                                                    ui.label(
+                                                        egui::RichText::new(
+                                                            if self.remaining_mode {
+                                                                "REM"
+                                                            } else {
+                                                                "ELAPSED"
+                                                            },
+                                                        )
+                                                        .font(silkscreen_font(9.0))
+                                                        .color(LCD_GREEN.gamma_multiply(0.6)),
+                                                    );
+                                                    resp
+                                                },
+                                            );
                                             if time_resp.inner.clicked() {
                                                 self.remaining_mode = !self.remaining_mode;
                                             }
 
                                             ui.add_space(6.0);
+                                            // Badge row spans exactly the time
+                                            // column width: 66 + 5 + 51 + 5 + 51.
                                             ui.horizontal(|ui| {
                                                 let kbps_text = info
                                                     .kbps
@@ -1149,66 +1186,18 @@ impl eframe::App for WhenAmpApp {
                                                     .sample_rate_hz
                                                     .map(|hz| format!("{} KHZ", hz / 1000))
                                                     .unwrap_or_else(|| "-- KHZ".to_string());
-
-                                                let (kbps_rect, _) = ui.allocate_exact_size(
-                                                    Vec2::new(66.0, 14.0),
-                                                    Sense::hover(),
-                                                );
-                                                ui.painter().rect_filled(kbps_rect, 0.0, LCD_GREEN);
-                                                let g = ui.painter().layout_no_wrap(
-                                                    kbps_text,
-                                                    badge_font(10.0),
-                                                    LCD_PANEL_BG,
-                                                );
-                                                let pos = (kbps_rect.center()
-                                                    - g.size() / 2.0
-                                                    - Vec2::new(0.0, 1.0))
-                                                .round();
-                                                ui.painter().galley(pos, g, LCD_PANEL_BG);
-
-                                                ui.add_space(4.0);
-                                                let (khz_rect, _) = ui.allocate_exact_size(
-                                                    Vec2::new(48.0, 14.0),
-                                                    Sense::hover(),
-                                                );
-                                                ui.painter().rect_filled(khz_rect, 0.0, LCD_GREEN);
-                                                let g = ui.painter().layout_no_wrap(
-                                                    khz_text,
-                                                    badge_font(10.0),
-                                                    LCD_PANEL_BG,
-                                                );
-                                                let pos = (khz_rect.center()
-                                                    - g.size() / 2.0
-                                                    - Vec2::new(0.0, 1.0))
-                                                .round();
-                                                ui.painter().galley(pos, g, LCD_PANEL_BG);
-
-                                                ui.add_space(4.0);
                                                 let stereo_on = info.channels.unwrap_or(1) >= 2;
-                                                let (st_rect, _) = ui.allocate_exact_size(
-                                                    Vec2::new(52.0, 14.0),
-                                                    Sense::hover(),
+
+                                                lcd_badge(ui, &kbps_text, 66.0, has_song);
+                                                ui.add_space(5.0);
+                                                lcd_badge(ui, &khz_text, 51.0, has_song);
+                                                ui.add_space(5.0);
+                                                lcd_badge(
+                                                    ui,
+                                                    "STEREO",
+                                                    51.0,
+                                                    has_song && stereo_on,
                                                 );
-                                                let alpha = if has_song && stereo_on {
-                                                    1.0
-                                                } else {
-                                                    0.25
-                                                };
-                                                ui.painter().rect_filled(
-                                                    st_rect,
-                                                    0.0,
-                                                    LCD_GREEN.gamma_multiply(alpha),
-                                                );
-                                                let g = ui.painter().layout_no_wrap(
-                                                    "STEREO".to_string(),
-                                                    badge_font(10.0),
-                                                    LCD_PANEL_BG,
-                                                );
-                                                let pos = (st_rect.center()
-                                                    - g.size() / 2.0
-                                                    - Vec2::new(0.0, 1.0))
-                                                .round();
-                                                ui.painter().galley(pos, g, LCD_PANEL_BG);
                                             });
                                         });
 
@@ -1235,37 +1224,47 @@ impl eframe::App for WhenAmpApp {
 
                             ui.add_space(8.0);
 
-                            // Volume / balance / EQ / PL row.
+                            // Volume / balance / EQ / PL row. The volume
+                            // slider flexes to fill; EQ/PL dock flush to the
+                            // right gutter, mirroring SHUFFLE/REPEAT below.
                             ui.horizontal(|ui| {
+                                let label_font = silkscreen_font(8.0);
+                                let vol_label_w = ui
+                                    .painter()
+                                    .layout_no_wrap("VOL".into(), label_font.clone(), DIM_GRAY)
+                                    .size()
+                                    .x;
+                                let bal_label_w = ui
+                                    .painter()
+                                    .layout_no_wrap("BAL".into(), label_font.clone(), DIM_GRAY)
+                                    .size()
+                                    .x;
+                                // labels + BAL slider (120) + EQ/PL (34+3+34)
+                                // + four 8px gaps.
+                                let reserved = vol_label_w + bal_label_w + 120.0 + 71.0 + 32.0;
+                                let vol_w = (ui.available_width() - reserved).max(100.0);
+
                                 ui.label(
                                     egui::RichText::new("VOL")
-                                        .font(silkscreen_font(8.0))
+                                        .font(label_font.clone())
                                         .color(DIM_GRAY),
                                 );
+                                ui.add_space(8.0);
                                 let vol = player.volume();
-                                let (_resp, drag) = bevel_slider(
-                                    ui,
-                                    Vec2::new(150.0, 6.0),
-                                    vol,
-                                    LCD_GREEN,
-                                );
+                                let (_resp, drag) =
+                                    bevel_slider(ui, Vec2::new(vol_w, 6.0), vol, LCD_GREEN);
                                 if let Some(v) = drag {
                                     player.set_volume(v);
                                 }
 
-                                ui.add_space(6.0);
+                                ui.add_space(8.0);
                                 ui.label(
-                                    egui::RichText::new("BAL")
-                                        .font(silkscreen_font(8.0))
-                                        .color(DIM_GRAY),
+                                    egui::RichText::new("BAL").font(label_font).color(DIM_GRAY),
                                 );
+                                ui.add_space(8.0);
                                 let bal = player.balance();
-                                let (bal_resp, drag) = bevel_slider(
-                                    ui,
-                                    Vec2::new(90.0, 6.0),
-                                    bal,
-                                    LCD_GREEN,
-                                );
+                                let (bal_resp, drag) =
+                                    bevel_slider(ui, Vec2::new(120.0, 6.0), bal, LCD_GREEN);
                                 if let Some(v) = drag {
                                     player.set_balance(v);
                                 }
@@ -1273,23 +1272,32 @@ impl eframe::App for WhenAmpApp {
                                     player.set_balance(0.5);
                                 }
 
-                                ui.add_space(6.0);
-                                if toggle_label_button(ui, "EQ", self.eq_on, 34.0).clicked() {
-                                    self.eq_on = !self.eq_on;
-                                }
-                                ui.add_space(3.0);
-                                if toggle_label_button(ui, "PL", self.playlist_open, 34.0)
-                                    .on_hover_text("Playlist")
-                                    .clicked()
-                                {
-                                    self.playlist_open = !self.playlist_open;
-                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if toggle_label_button(ui, "PL", self.playlist_open, 34.0)
+                                            .on_hover_text("Playlist")
+                                            .clicked()
+                                        {
+                                            self.playlist_open = !self.playlist_open;
+                                        }
+                                        ui.add_space(3.0);
+                                        if toggle_label_button(ui, "EQ", self.eq_on, 34.0)
+                                            .clicked()
+                                        {
+                                            self.eq_on = !self.eq_on;
+                                        }
+                                    },
+                                );
                             });
 
                             ui.add_space(8.0);
 
-                            // Seek bar, inset 10px further on each side than the
-                            // content column so it doesn't crowd the chassis edge.
+                            // Seek bar: the 20px handle is centered on the
+                            // playhead, so at the extremes it overhangs the
+                            // track by 10px per side. Inset the track by that
+                            // much so the handle sits flush with the 8px
+                            // gutter at 0% and 100%.
                             let seek_value = pos_secs / duration_secs;
                             let (seek_resp, seek_drag) = ui
                                 .horizontal(|ui| {
@@ -1337,7 +1345,7 @@ impl eframe::App for WhenAmpApp {
                                         }
                                     }
                                 }
-                                ui.add_space(4.0);
+                                ui.add_space(8.0);
 
                                 ui.add_enabled_ui(has_song, |ui| {
                                     if icon_button(ui, Icon::Prev)
@@ -1352,11 +1360,13 @@ impl eframe::App for WhenAmpApp {
                                             Direction::Prev,
                                         );
                                     }
+                                    ui.add_space(3.0);
                                     if icon_button(ui, Icon::Play).on_hover_text("Play").clicked()
                                     {
                                         player.play();
                                         self.is_playing = true;
                                     }
+                                    ui.add_space(3.0);
                                     if icon_button(ui, Icon::Pause)
                                         .on_hover_text("Pause")
                                         .clicked()
@@ -1364,11 +1374,13 @@ impl eframe::App for WhenAmpApp {
                                         player.pause();
                                         self.is_playing = false;
                                     }
+                                    ui.add_space(3.0);
                                     if icon_button(ui, Icon::Stop).on_hover_text("Stop").clicked()
                                     {
                                         player.stop();
                                         self.is_playing = false;
                                     }
+                                    ui.add_space(3.0);
                                     if icon_button(ui, Icon::Next)
                                         .on_hover_text("Next")
                                         .clicked()
