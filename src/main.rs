@@ -28,6 +28,9 @@ const LCD_FONT_NAME: &str = "dseg7-classic-bold";
 const SILKSCREEN_FONT_NAME: &str = "silkscreen";
 
 const CHASSIS_WIDTH: f32 = 560.0;
+/// Left/right inset of content (panels, sliders, button rows) from the
+/// chassis sides. Title strips keep their own 8px internal padding.
+const GUTTER: f32 = 2.0;
 /// Smallest the playlist section can be squashed to (header + toolbar +
 /// a sliver of list).
 const MIN_PLAYLIST_HEIGHT: f32 = 110.0;
@@ -569,7 +572,7 @@ fn playlist_body(
 ) {
     {
             ui.horizontal(|ui| {
-                ui.add_space(8.0);
+                ui.add_space(GUTTER);
                 if toggle_label_button(ui, "ADD", false, 42.0)
                     .on_hover_text("Add files")
                     .clicked()
@@ -632,12 +635,12 @@ fn playlist_body(
             let mut to_remove = None;
 
             // Recessed panel behind the track list, matching the main LCD
-            // display's chrome — same 8px margins and inner padding.
+            // display's chrome — same gutter and inner padding.
             let panel_rect = ui
                 .horizontal(|ui| {
-                    ui.add_space(8.0);
+                    ui.add_space(GUTTER);
                     let size = Vec2::new(
-                        CHASSIS_WIDTH - 16.0,
+                        CHASSIS_WIDTH - 2.0 * GUTTER,
                         (ui.available_height() - 8.0).max(0.0),
                     );
                     ui.allocate_exact_size(size, Sense::hover()).0
@@ -890,6 +893,9 @@ impl eframe::App for WhenAmpApp {
 
                         ui.scope_builder(
                             egui::UiBuilder::new()
+                                // Micro mode's row is title-strip-like, so it
+                                // keeps the 8px bar padding, not the content
+                                // gutter.
                                 .max_rect(row_rect.shrink2(Vec2::new(8.0, 1.0))),
                             |ui| {
                                 ui.with_layout(
@@ -1119,14 +1125,16 @@ impl eframe::App for WhenAmpApp {
                         },
                     );
 
-                    ui.add_space(8.0);
+                    // Extra breathing room between the title strip and the
+                    // LCD panel.
+                    ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        ui.add_space(8.0);
+                        ui.add_space(GUTTER);
                         ui.vertical(|ui| {
-                            ui.set_width(CHASSIS_WIDTH - 16.0);
+                            ui.set_width(CHASSIS_WIDTH - 2.0 * GUTTER);
 
                             // LCD row: time+badges on the left, visualizer+marquee on the right.
-                            let lcd_size = Vec2::new(CHASSIS_WIDTH - 16.0, 104.0);
+                            let lcd_size = Vec2::new(CHASSIS_WIDTH - 2.0 * GUTTER, 104.0);
                             let (lcd_rect, _) = ui.allocate_exact_size(lcd_size, Sense::hover());
                             bevel_rect(ui, lcd_rect, LCD_PANEL_BG, false);
 
@@ -1222,7 +1230,9 @@ impl eframe::App for WhenAmpApp {
                                 },
                             );
 
-                            ui.add_space(8.0);
+                            // Extra breathing room between the LCD panel and
+                            // the sliders.
+                            ui.add_space(12.0);
 
                             // Volume / balance / EQ / PL row. The volume
                             // slider flexes to fill; EQ/PL dock flush to the
@@ -1302,7 +1312,11 @@ impl eframe::App for WhenAmpApp {
                             let (seek_resp, seek_drag) = ui
                                 .horizontal(|ui| {
                                     ui.add_space(10.0);
-                                    seek_bar(ui, Vec2::new(CHASSIS_WIDTH - 36.0, 10.0), seek_value)
+                                    seek_bar(
+                                        ui,
+                                        Vec2::new(CHASSIS_WIDTH - 2.0 * GUTTER - 20.0, 10.0),
+                                        seek_value,
+                                    )
                                 })
                                 .inner;
                             if has_song {
