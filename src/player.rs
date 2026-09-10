@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,6 +29,19 @@ const DEFAULT_VOLUME: f32 = 0.78;
 /// 0.0 = full left, 0.5 = center, 1.0 = full right.
 const DEFAULT_BALANCE: f32 = 0.5;
 
+/// Number of graphic EQ bands.
+pub const NUM_EQ_BANDS: usize = 10;
+/// Center frequencies (Hz) for each band — the classic Winamp 10-band
+/// layout, roughly one octave apart through the bass/mids and tighter
+/// through the treble where the ear is more sensitive to detail.
+pub const EQ_BANDS_HZ: [f32; NUM_EQ_BANDS] =
+    [60.0, 170.0, 310.0, 600.0, 1_000.0, 3_000.0, 6_000.0, 12_000.0, 14_000.0, 16_000.0];
+/// Max boost/cut per band, in dB.
+pub const EQ_GAIN_RANGE_DB: f32 = 12.0;
+/// Filter Q (bandwidth) for each peaking band. Low enough that adjacent
+/// bands overlap smoothly rather than each sounding like a narrow notch.
+const EQ_Q: f32 = 1.2;
+
 /// Metadata about the currently loaded track beyond title/duration.
 #[derive(Clone, Copy, Default)]
 pub struct TrackInfo {
@@ -46,6 +59,8 @@ pub struct Player {
     track_info: TrackInfo,
     volume: f32,
     balance: Arc<AtomicU32>,
+    eq_enabled: Arc<AtomicBool>,
+    eq_gains_db: Arc<[AtomicU32; NUM_EQ_BANDS]>,
     sample_buffer: Arc<Mutex<VecDeque<f32>>>,
     visualizer_sample_rate: u32,
     visualizer_bars: [f32; VISUALIZER_BARS],
@@ -68,6 +83,8 @@ impl Player {
             track_info: TrackInfo::default(),
             volume: DEFAULT_VOLUME,
             balance: Arc::new(AtomicU32::new(DEFAULT_BALANCE.to_bits())),
+            eq_enabled: Arc::new(AtomicBool::new(false)),
+            eq_gains_db: Arc::new(std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits()))),
             sample_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(FFT_SIZE))),
             visualizer_sample_rate: 0,
             visualizer_bars: [0.0; VISUALIZER_BARS],
@@ -133,6 +150,38 @@ impl Player {
     pub fn set_balance(&mut self, balance: f32) {
         self.balance
             .store(balance.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn eq_enabled(&self) -> bool {
+        self.eq_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_eq_enabled(&mut self, enabled: bool) {
+        self.eq_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Current gain (dB) for `band`, one of `0..NUM_EQ_BANDS`.
+    pub fn eq_gain(&self, band: usize) -> f32 {
+        self.eq_gains_db
+            .get(band)
+            .map(|g| f32::from_bits(g.load(Ordering::Relaxed)))
+            .unwrap_or(0.0)
+    }
+
+    /// Set the gain (dB) for `band`, applied live — no reload required.
+    pub fn set_eq_gain(&mut self, band: usize, db: f32) {
+        if let Some(g) = self.eq_gains_db.get(band) {
+            g.store(
+                db.clamp(-EQ_GAIN_RANGE_DB, EQ_GAIN_RANGE_DB).to_bits(),
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    pub fn reset_eq(&mut self) {
+        for g in self.eq_gains_db.iter() {
+            g.store(0.0f32.to_bits(), Ordering::Relaxed);
+        }
     }
 
     /// A snapshot of the 28 visualizer bars (0.0..=1.0), bass on the left
@@ -226,8 +275,15 @@ impl Player {
         self.sample_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(FFT_SIZE)));
         self.visualizer_sample_rate = sample_rate.get();
         self.visualizer_bars = [0.0; VISUALIZER_BARS];
+        let equalized = EqTap::new(
+            source,
+            channels.get() as usize,
+            sample_rate.get() as f32,
+            self.eq_enabled.clone(),
+            self.eq_gains_db.clone(),
+        );
         let tapped = VisualizerTap {
-            inner: source,
+            inner: equalized,
             buffer: self.sample_buffer.clone(),
             channels: channels.get() as usize,
             frame_acc: 0.0,
@@ -405,6 +461,157 @@ impl<S: Source> Iterator for BalanceTap<S> {
 }
 
 impl<S: Source> Source for BalanceTap<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+        self.inner.try_seek(pos)
+    }
+}
+
+/// Coefficients for one RBJ "peaking EQ" biquad — boosts or cuts a band
+/// around `freq` without disturbing frequencies far from it. At 0dB gain
+/// this is (very close to) the identity filter.
+#[derive(Clone, Copy, Default)]
+struct BiquadCoeffs {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+}
+
+impl BiquadCoeffs {
+    /// See the Audio EQ Cookbook (RBJ) "peakingEQ" formulas.
+    fn peaking(sample_rate: f32, freq: f32, gain_db: f32, q: f32) -> Self {
+        // Keep the filter well away from Nyquist so it stays stable even
+        // for oddball low sample rates.
+        let freq = freq.min(sample_rate * 0.45).max(1.0);
+        let a = 10f32.powf(gain_db / 40.0);
+        let w0 = std::f32::consts::TAU * freq / sample_rate;
+        let (sin_w0, cos_w0) = w0.sin_cos();
+        let alpha = sin_w0 / (2.0 * q);
+
+        let a0 = 1.0 + alpha / a;
+        Self {
+            b0: (1.0 + alpha * a) / a0,
+            b1: (-2.0 * cos_w0) / a0,
+            b2: (1.0 - alpha * a) / a0,
+            a1: (-2.0 * cos_w0) / a0,
+            a2: (1.0 - alpha / a) / a0,
+        }
+    }
+}
+
+/// Direct-Form-I biquad filter state (one instance per audio channel, since
+/// interleaved L/R samples must not share history).
+#[derive(Clone, Copy, Default)]
+struct BiquadState {
+    x1: f32,
+    x2: f32,
+    y1: f32,
+    y2: f32,
+}
+
+impl BiquadState {
+    fn process(&mut self, c: &BiquadCoeffs, x: f32) -> f32 {
+        let y = c.b0 * x + c.b1 * self.x1 + c.b2 * self.x2 - c.a1 * self.y1 - c.a2 * self.y2;
+        self.x2 = self.x1;
+        self.x1 = x;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
+    }
+}
+
+/// Wraps a [`Source`] with a 10-band graphic EQ (series of peaking biquads
+/// per channel). Gains and the enabled flag are read from shared atomics so
+/// the UI can adjust them live, no reload required. Coefficients are only
+/// recomputed when a gain actually changes.
+struct EqTap<S> {
+    inner: S,
+    channels: usize,
+    channel_index: usize,
+    sample_rate: f32,
+    enabled: Arc<AtomicBool>,
+    gains_db: Arc<[AtomicU32; NUM_EQ_BANDS]>,
+    cached_gains_db: [f32; NUM_EQ_BANDS],
+    coeffs: [BiquadCoeffs; NUM_EQ_BANDS],
+    // One filter state per band, per channel.
+    states: Vec<[BiquadState; NUM_EQ_BANDS]>,
+}
+
+impl<S> EqTap<S> {
+    fn new(
+        inner: S,
+        channels: usize,
+        sample_rate: f32,
+        enabled: Arc<AtomicBool>,
+        gains_db: Arc<[AtomicU32; NUM_EQ_BANDS]>,
+    ) -> Self {
+        let channels = channels.max(1);
+        Self {
+            inner,
+            channels,
+            channel_index: 0,
+            sample_rate,
+            enabled,
+            gains_db,
+            cached_gains_db: [0.0; NUM_EQ_BANDS],
+            coeffs: [BiquadCoeffs::default(); NUM_EQ_BANDS],
+            states: vec![[BiquadState::default(); NUM_EQ_BANDS]; channels],
+        }
+    }
+}
+
+impl<S: Source> Iterator for EqTap<S> {
+    type Item = rodio::Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = self.inner.next()?;
+        let channel = self.channel_index;
+        self.channel_index = (self.channel_index + 1) % self.channels;
+
+        if !self.enabled.load(Ordering::Relaxed) {
+            return Some(sample);
+        }
+
+        for band in 0..NUM_EQ_BANDS {
+            let gain = f32::from_bits(self.gains_db[band].load(Ordering::Relaxed));
+            if gain != self.cached_gains_db[band] {
+                self.cached_gains_db[band] = gain;
+                self.coeffs[band] =
+                    BiquadCoeffs::peaking(self.sample_rate, EQ_BANDS_HZ[band], gain, EQ_Q);
+            }
+        }
+
+        let state = &mut self.states[channel];
+        let mut y = sample;
+        for band in 0..NUM_EQ_BANDS {
+            y = state[band].process(&self.coeffs[band], y);
+        }
+        Some(y)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<S: Source> Source for EqTap<S> {
     fn current_span_len(&self) -> Option<usize> {
         self.inner.current_span_len()
     }
@@ -720,6 +927,77 @@ mod tests {
         player.set_volume(0.3);
         player.stop();
         assert_eq!(player.volume(), 0.3);
+    }
+
+    /// Runs a sine wave at `freq` through a single band's filter (settling
+    /// past the transient) and returns the resulting peak amplitude.
+    fn filtered_sine_peak(sample_rate: f32, band: usize, gain_db: f32, freq: f32) -> f32 {
+        let coeffs = BiquadCoeffs::peaking(sample_rate, EQ_BANDS_HZ[band], gain_db, EQ_Q);
+        let mut state = BiquadState::default();
+        let mut peak = 0.0f32;
+        let total = (sample_rate * 0.05) as usize; // 50ms
+        let settle = total / 2;
+        for i in 0..total {
+            let t = i as f32 / sample_rate;
+            let x = (std::f32::consts::TAU * freq * t).sin();
+            let y = state.process(&coeffs, x);
+            if i >= settle {
+                peak = peak.max(y.abs());
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn peaking_eq_at_zero_db_is_unity_gain() {
+        let peak = filtered_sine_peak(44_100.0, 0, 0.0, EQ_BANDS_HZ[0]);
+        assert!((peak - 1.0).abs() < 0.02, "peak was {peak}, expected ~1.0");
+    }
+
+    #[test]
+    fn peaking_eq_boosts_and_cuts_its_own_band() {
+        let band = 4; // 1kHz
+        let freq = EQ_BANDS_HZ[band];
+        let boosted = filtered_sine_peak(44_100.0, band, EQ_GAIN_RANGE_DB, freq);
+        let cut = filtered_sine_peak(44_100.0, band, -EQ_GAIN_RANGE_DB, freq);
+        assert!(boosted > 1.5, "boosted peak was {boosted}, expected > 1.5");
+        assert!(cut < 0.5, "cut peak was {cut}, expected < 0.5");
+        assert!(boosted > cut);
+    }
+
+    #[test]
+    fn peaking_eq_leaves_distant_frequencies_mostly_alone() {
+        // Boosting the 60Hz band by the max amount shouldn't meaningfully
+        // move a 16kHz tone.
+        let peak = filtered_sine_peak(44_100.0, 0, EQ_GAIN_RANGE_DB, 16_000.0);
+        assert!((peak - 1.0).abs() < 0.1, "peak was {peak}, expected ~1.0");
+    }
+
+    #[test]
+    fn eq_enabled_and_gains_round_trip_and_persist_across_stop() {
+        let Some(mut player) = test_player() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silence.wav");
+        write_silent_wav(&path, 1.0);
+        player.load(path).unwrap();
+
+        assert!(!player.eq_enabled());
+        player.set_eq_enabled(true);
+        assert!(player.eq_enabled());
+
+        player.set_eq_gain(2, 20.0); // out of range, should clamp
+        assert_eq!(player.eq_gain(2), EQ_GAIN_RANGE_DB);
+        player.set_eq_gain(2, -3.5);
+        assert!((player.eq_gain(2) - (-3.5)).abs() < 1e-6);
+
+        player.stop();
+        assert!(player.eq_enabled());
+        assert!((player.eq_gain(2) - (-3.5)).abs() < 1e-6);
+
+        player.reset_eq();
+        assert_eq!(player.eq_gain(2), 0.0);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use eframe::egui;
 use egui::{Color32, Rect, Response, Sense, Stroke, Ui, Vec2};
-use player::{Player, VISUALIZER_BARS};
+use player::{Player, EQ_BANDS_HZ, EQ_GAIN_RANGE_DB, NUM_EQ_BANDS, VISUALIZER_BARS};
 use playlist::Playlist;
 
 // Palette lifted from the "SONIC DECK" Claude Design mockup (Graphite chrome).
@@ -50,7 +50,6 @@ struct WhenAmpApp {
     title_marquee_started_at: f64,
     remaining_mode: bool,
     viz_bars: [f32; VISUALIZER_BARS],
-    eq_on: bool,
     shuffle_on: bool,
     repeat_on: bool,
     is_playing: bool,
@@ -65,6 +64,12 @@ struct WhenAmpApp {
     /// that's actually playing (`playlist.current`) — single-click only
     /// selects; double-click plays.
     playlist_selected: Option<usize>,
+    /// Whether the EQ panel is showing, fused between the player and the
+    /// playlist (same "part of the window" treatment as the playlist). Its
+    /// height flows into the same fixed_content_height math the playlist
+    /// resize logic already uses, so no open/close transition tracking is
+    /// needed here — the per-frame size diff picks it up naturally.
+    eq_open: bool,
 }
 
 fn format_duration(d: Duration) -> String {
@@ -209,6 +214,82 @@ fn bevel_slider(ui: &mut Ui, size: Vec2, value: f32, fill: Color32) -> (Response
     });
 
     (response, drag_value.flatten())
+}
+
+/// A vertical bipolar slider for one EQ band: drag up to boost, down to cut,
+/// with a center tick at 0dB. Returns the response (double-click to reset)
+/// plus the value implied by the pointer while dragging.
+fn eq_band_slider(
+    ui: &mut Ui,
+    size: Vec2,
+    value_db: f32,
+    range_db: f32,
+) -> (Response, Option<f32>) {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    bevel_rect(ui, rect, TRACK_BG, false);
+
+    let travel = (rect.height() / 2.0 - 6.0).max(1.0);
+    let center = rect.center();
+
+    // Center (0dB) tick.
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left() + 2.0, center.y),
+            egui::pos2(rect.right() - 2.0, center.y),
+        ],
+        Stroke::new(1.0, INACTIVE),
+    );
+
+    let t = (value_db / range_db).clamp(-1.0, 1.0);
+    let handle_center = egui::pos2(center.x, center.y - t * travel);
+    let handle_rect = Rect::from_center_size(handle_center, Vec2::new(rect.width() + 4.0, 8.0));
+    bevel_rect(ui, handle_rect, FACE, true);
+
+    let drag_value = response.dragged().then(|| {
+        response.interact_pointer_pos().map(|pos| {
+            let t = ((center.y - pos.y) / travel).clamp(-1.0, 1.0);
+            t * range_db
+        })
+    });
+
+    (response, drag_value.flatten())
+}
+
+/// The EQ curve graph: straight line segments through each band's gain
+/// point (the same "graphical EQ" convention Winamp itself uses — this is
+/// not a computed filter-response curve, just a visual trace of the band
+/// values so it reads immediately and always matches the sliders exactly).
+fn eq_graph(ui: &mut Ui, size: Vec2, gains_db: &[f32; NUM_EQ_BANDS], range_db: f32) {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    bevel_rect(ui, rect, VIS_CANVAS_BG, false);
+
+    let center_y = rect.center().y;
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left(), center_y),
+            egui::pos2(rect.right(), center_y),
+        ],
+        Stroke::new(1.0, LCD_GREEN.gamma_multiply(0.25)),
+    );
+
+    let n = gains_db.len();
+    let col_w = rect.width() / n as f32;
+    let travel = rect.height() / 2.0 - 3.0;
+    let points: Vec<egui::Pos2> = gains_db
+        .iter()
+        .enumerate()
+        .map(|(i, &db)| {
+            let x = rect.left() + (i as f32 + 0.5) * col_w;
+            let t = (db / range_db).clamp(-1.0, 1.0);
+            egui::pos2(x, center_y - t * travel)
+        })
+        .collect();
+
+    ui.painter()
+        .add(egui::Shape::line(points.clone(), Stroke::new(1.5, LCD_GREEN)));
+    for p in points {
+        ui.painter().circle_filled(p, 2.0, LCD_GREEN);
+    }
 }
 
 /// Draws the seekbar: same chrome as `bevel_slider` but with a dashed fill
@@ -426,6 +507,116 @@ fn visualizer(ui: &mut Ui, size: Vec2, bars: &[f32; VISUALIZER_BARS]) {
         );
         painter.rect_filled(bar_rect, 0.0, LCD_GREEN.gamma_multiply(0.9));
     }
+}
+
+fn format_eq_freq(freq: f32) -> String {
+    if freq >= 1000.0 {
+        format!("{}K", (freq / 1000.0).round() as i32)
+    } else {
+        format!("{}", freq as i32)
+    }
+}
+
+/// The EQ panel, fused between the player and the playlist — toggled by the
+/// EQ button, same "part of the window" treatment as the playlist. Its own
+/// ON/OFF switch (separate from panel visibility) engages/bypasses the
+/// actual audio filtering. `bottom_rounded` is false when the playlist
+/// section is also showing directly below it, so their shared edge stays
+/// flat instead of both being independently rounded.
+fn eq_section(ui: &mut Ui, player: &mut Player, bottom_rounded: bool) -> egui::InnerResponse<()> {
+    let corner_radius = egui::CornerRadius {
+        nw: 0,
+        ne: 0,
+        sw: if bottom_rounded { CHASSIS_CORNER_RADIUS } else { 0 },
+        se: if bottom_rounded { CHASSIS_CORNER_RADIUS } else { 0 },
+    };
+    egui::Frame::new()
+        .fill(FACE)
+        .corner_radius(corner_radius)
+        .inner_margin(egui::Margin {
+            left: 3,
+            right: 3,
+            top: 0,
+            bottom: 3,
+        })
+        .show(ui, |ui| {
+            ui.set_width(CHASSIS_WIDTH);
+
+            let title_rect =
+                ui.allocate_exact_size(Vec2::new(CHASSIS_WIDTH, 20.0), Sense::hover()).0;
+            ui.painter().rect_filled(title_rect, 0.0, TITLE_BAR_BG);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(title_rect), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let enabled = player.eq_enabled();
+                    if toggle_label_button(ui, if enabled { "ON" } else { "OFF" }, enabled, 36.0)
+                        .on_hover_text("Enable/disable the EQ")
+                        .clicked()
+                    {
+                        player.set_eq_enabled(!enabled);
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("EQUALIZER")
+                            .font(silkscreen_font(9.0))
+                            .color(LABEL_GRAY),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        if toggle_label_button(ui, "RESET", false, 42.0)
+                            .on_hover_text("Reset all bands to 0dB")
+                            .clicked()
+                        {
+                            player.reset_eq();
+                        }
+                    });
+                });
+            });
+
+            ui.add_space(8.0);
+
+            let gains: [f32; NUM_EQ_BANDS] = std::array::from_fn(|i| player.eq_gain(i));
+            let graph_width = CHASSIS_WIDTH - 2.0 * GUTTER;
+
+            ui.horizontal(|ui| {
+                ui.add_space(GUTTER);
+                eq_graph(ui, Vec2::new(graph_width, 48.0), &gains, EQ_GAIN_RANGE_DB);
+            });
+
+            ui.add_space(8.0);
+
+            let col_w = graph_width / NUM_EQ_BANDS as f32;
+            ui.horizontal(|ui| {
+                ui.add_space(GUTTER);
+                for (i, &freq) in EQ_BANDS_HZ.iter().enumerate() {
+                    ui.vertical(|ui| {
+                        ui.set_width(col_w);
+                        ui.vertical_centered(|ui| {
+                            let (resp, drag) = eq_band_slider(
+                                ui,
+                                Vec2::new((col_w - 6.0).max(8.0), 84.0),
+                                gains[i],
+                                EQ_GAIN_RANGE_DB,
+                            );
+                            if let Some(v) = drag {
+                                player.set_eq_gain(i, v);
+                            }
+                            if resp.double_clicked() {
+                                player.set_eq_gain(i, 0.0);
+                            }
+                            ui.add_space(3.0);
+                            ui.label(
+                                egui::RichText::new(format_eq_freq(freq))
+                                    .font(badge_font(8.0))
+                                    .color(DIM_GRAY),
+                            );
+                        });
+                    });
+                }
+            });
+
+            ui.add_space(8.0);
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -735,7 +926,6 @@ impl WhenAmpApp {
             title_marquee_started_at: 0.0,
             remaining_mode: false,
             viz_bars: [0.0; VISUALIZER_BARS],
-            eq_on: true,
             shuffle_on: false,
             repeat_on: false,
             is_playing: false,
@@ -745,6 +935,7 @@ impl WhenAmpApp {
             playlist_open: false,
             playlist_was_open: false,
             playlist_selected: None,
+            eq_open: false,
         };
         match Player::new() {
             Ok(player) => Self {
@@ -853,10 +1044,12 @@ impl eframe::App for WhenAmpApp {
             // (rendered right below the chassis) — so the chassis's own
             // bottom corners stay flat where they meet it.
             let show_playlist = self.playlist_open;
+            let show_eq = self.eq_open;
+            let anything_below_chassis = show_eq || show_playlist;
 
             let chassis_frame = egui::Frame::new()
                 .fill(FACE)
-                .corner_radius(if show_playlist {
+                .corner_radius(if anything_below_chassis {
                     egui::CornerRadius {
                         nw: CHASSIS_CORNER_RADIUS,
                         ne: CHASSIS_CORNER_RADIUS,
@@ -1292,10 +1485,11 @@ impl eframe::App for WhenAmpApp {
                                             self.playlist_open = !self.playlist_open;
                                         }
                                         ui.add_space(3.0);
-                                        if toggle_label_button(ui, "EQ", self.eq_on, 34.0)
+                                        if toggle_label_button(ui, "EQ", self.eq_open, 34.0)
+                                            .on_hover_text("Equalizer")
                                             .clicked()
                                         {
-                                            self.eq_on = !self.eq_on;
+                                            self.eq_open = !self.eq_open;
                                         }
                                     },
                                 );
@@ -1443,6 +1637,15 @@ impl eframe::App for WhenAmpApp {
                     ui.add_space(8.0);
                 });
 
+                let mut fixed_content_height = chassis_response.response.rect.height();
+
+                if show_eq {
+                    // Its bottom edge stays flat only if the playlist is
+                    // showing directly below it.
+                    let eq_response = eq_section(ui, player, !show_playlist);
+                    fixed_content_height += eq_response.response.rect.height();
+                }
+
                 if show_playlist {
                     playlist_section(
                         ui,
@@ -1454,7 +1657,7 @@ impl eframe::App for WhenAmpApp {
                     );
                 }
 
-                chassis_response.response.rect.height()
+                fixed_content_height
             });
 
             let just_opened = self.playlist_open && !self.playlist_was_open;
@@ -1465,9 +1668,10 @@ impl eframe::App for WhenAmpApp {
             if just_opened {
                 // Let the window resize vertically (dragging the bottom edge
                 // or a bottom corner), but keep the width locked to the
-                // chassis: min/max width are the same value.
-                let chassis_height = combined_response.inner;
-                let min_height = chassis_height + MIN_PLAYLIST_HEIGHT;
+                // chassis: min/max width are the same value. The floor
+                // includes the EQ panel's height too, if it's showing.
+                let fixed_height = combined_response.inner;
+                let min_height = fixed_height + MIN_PLAYLIST_HEIGHT;
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::Resizable(true));
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::MinInnerSize(
@@ -1476,7 +1680,7 @@ impl eframe::App for WhenAmpApp {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(
                     Vec2::new(window_width, 4000.0),
                 ));
-                let initial_height = chassis_height + INITIAL_PLAYLIST_HEIGHT;
+                let initial_height = fixed_height + INITIAL_PLAYLIST_HEIGHT;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
                     Vec2::new(window_width, initial_height),
                 ));
@@ -1505,12 +1709,12 @@ impl eframe::App for WhenAmpApp {
                 }
             } else {
                 // No playlist: snap the (non-resizable) window to exactly
-                // fit the chassis. Use the chassis-only height captured
-                // above rather than the drawn rect's size — on the very
-                // frame the playlist closes, that rect still reflects the
-                // stale (tall) layout from before the toggle, which would
-                // otherwise send the wrong size for one frame and then
-                // correct it the next, causing a visible flicker.
+                // fit the chassis plus the EQ panel (if showing). Use the
+                // height captured above rather than the drawn rect's size —
+                // on the very frame the playlist (or EQ) toggles, that rect
+                // still reflects the stale layout from before the toggle,
+                // which would otherwise send the wrong size for one frame
+                // and then correct it the next, causing a visible flicker.
                 let desired_size = Vec2::new(window_width, combined_response.inner);
                 if self
                     .last_window_size

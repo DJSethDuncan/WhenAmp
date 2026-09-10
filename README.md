@@ -27,6 +27,21 @@ git config core.hooksPath .githooks
 This wires up a pre-commit hook that runs `cargo test` before every commit.
 See `AGENTS.md` for the test-coverage expectations for new features.
 
+## Equalizer
+
+Click EQ to toggle a 10-band graphic EQ, fused into the window the same way
+the playlist is — always sits between the player and the playlist (if both
+are open), no separate window. It's a real audio EQ, not decorative: each
+band is an RBJ peaking biquad filter (±12dB, Q 1.2) applied live to the
+decoded stream, at the classic Winamp band frequencies (60, 170, 310, 600,
+1K, 3K, 6K, 12K, 14K, 16K Hz). The panel has its own ON/OFF switch,
+separate from panel visibility — opening the panel doesn't engage the
+filtering, so you can dial in a curve before it affects playback. Drag a
+band up/down to boost/cut, double-click to reset it to 0dB, or use RESET
+to zero every band at once. The small graph above the sliders traces a
+line through the 10 band values — the same convention Winamp's own EQ
+uses, not a computed frequency-response curve.
+
 ## Playlist
 
 Click PL to toggle the playlist on or off. It's fused directly into the
@@ -56,10 +71,10 @@ LCD display's chrome, inset a few pixels from the window edges.
 ## Design
 
 The UI chrome ("SONIC DECK" graphite skin) is ported from a Claude Design
-mockup. Volume, Balance (double-click to re-center), Repeat, and now
-Prev/Next/PL are wired to real playback and the playlist; EQ and Shuffle
-remain visual toggles carried over from the mockup with no backing behavior
-(no equalizer, and the queue is navigated in order). The visualizer is a
+mockup. Volume, Balance (double-click to re-center), Repeat, Prev/Next/PL,
+and now EQ are wired to real playback and the playlist; Shuffle remains a
+visual toggle with no backing behavior (the queue is navigated in order).
+The visualizer is a
 real-time FFT spectrum analyzer (bass on the left, treble on the right),
 fed by a mono downmix tap on the decoded audio stream, with gain tuned so
 bars use more of the available height and a treble-side boost compensating
@@ -96,5 +111,5 @@ All embedded in the binary under `assets/fonts/`.
 ## Status
 
 Phase 1: load / play / pause / stop / seek with a draggable progress bar,
-a real-time FFT visualizer, and a playlist (drag & drop, M3U8 save/import,
-dockable window).
+a real-time FFT visualizer, a real 10-band EQ, and a playlist (drag & drop,
+M3U8 save/import).
