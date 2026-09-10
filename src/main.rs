@@ -602,46 +602,63 @@ fn playlist_body(
 
             let mut to_play = None;
             let mut to_remove = None;
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                if playlist.entries.is_empty() {
-                    ui.label(
-                        egui::RichText::new("Drop audio files here, or use ADD.")
-                            .font(silkscreen_font(9.0))
-                            .color(DIM_GRAY),
-                    );
-                }
-                for (index, entry) in playlist.entries.iter().enumerate() {
-                    let is_current = playlist.current == Some(index);
-                    let is_selected = *selected == Some(index);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{}.", index + 1))
-                                .font(badge_font(11.0))
-                                .color(DIM_GRAY),
-                        );
-                        let color = if is_current { LCD_GREEN } else { INK };
-                        let label = egui::RichText::new(&entry.display_name).color(color);
-                        let response = ui.selectable_label(is_selected, label);
-                        if response.double_clicked() {
-                            to_play = Some(index);
-                            *selected = Some(index);
-                        } else if response.clicked() {
-                            *selected = Some(index);
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .small_button("×")
-                                .on_hover_text("Remove")
-                                .clicked()
-                            {
-                                to_remove = Some(index);
+
+            // Recessed panel behind the track list, matching the main LCD
+            // display's chrome, with a small margin to the window edges.
+            let panel_rect = {
+                let size = (ui.available_size() - Vec2::new(12.0, 6.0)).max(Vec2::ZERO);
+                ui.allocate_exact_size(size, Sense::hover()).0
+            };
+            bevel_rect(ui, panel_rect, LCD_PANEL_BG, false);
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(panel_rect.shrink(6.0)),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if playlist.entries.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("Drop audio files here, or use ADD.")
+                                        .font(silkscreen_font(9.0))
+                                        .color(DIM_GRAY),
+                                );
+                            }
+                            for (index, entry) in playlist.entries.iter().enumerate() {
+                                let is_current = playlist.current == Some(index);
+                                let is_selected = *selected == Some(index);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}.", index + 1))
+                                            .font(badge_font(11.0))
+                                            .color(DIM_GRAY),
+                                    );
+                                    let color = if is_current { LCD_GREEN } else { INK };
+                                    let label =
+                                        egui::RichText::new(&entry.display_name).color(color);
+                                    let response = ui.selectable_label(is_selected, label);
+                                    if response.double_clicked() {
+                                        to_play = Some(index);
+                                        *selected = Some(index);
+                                    } else if response.clicked() {
+                                        *selected = Some(index);
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .small_button("×")
+                                                .on_hover_text("Remove")
+                                                .clicked()
+                                            {
+                                                to_remove = Some(index);
+                                            }
+                                        },
+                                    );
+                                });
                             }
                         });
-                    });
-                }
-            });
+                },
+            );
 
             if let Some(index) = to_play {
                 if let Some(path) = playlist.set_current(index) {
@@ -772,7 +789,7 @@ impl eframe::App for WhenAmpApp {
             let title_text = if has_song {
                 player.display_name().unwrap_or_default()
             } else {
-                "No song loaded".to_string()
+                String::new()
             };
             if title_text != self.title_marquee_text {
                 self.title_marquee_text = title_text.clone();
@@ -789,7 +806,7 @@ impl eframe::App for WhenAmpApp {
             let lcd_text = if has_song {
                 format_duration(shown)
             } else {
-                "LOAD".to_string()
+                "--:--".to_string()
             };
 
             // The playlist, when open, is fused into this same window
@@ -1148,22 +1165,17 @@ impl eframe::App for WhenAmpApp {
                                                     Vec2::new(48.0, 14.0),
                                                     Sense::hover(),
                                                 );
-                                                ui.painter().rect_stroke(
-                                                    khz_rect,
-                                                    0.0,
-                                                    Stroke::new(1.0, LCD_GREEN.gamma_multiply(0.4)),
-                                                    egui::StrokeKind::Inside,
-                                                );
+                                                ui.painter().rect_filled(khz_rect, 0.0, LCD_GREEN);
                                                 let g = ui.painter().layout_no_wrap(
                                                     khz_text,
                                                     badge_font(10.0),
-                                                    LCD_GREEN,
+                                                    LCD_PANEL_BG,
                                                 );
                                                 let pos = (khz_rect.center()
                                                     - g.size() / 2.0
                                                     - Vec2::new(0.0, 1.0))
                                                 .round();
-                                                ui.painter().galley(pos, g, LCD_GREEN);
+                                                ui.painter().galley(pos, g, LCD_PANEL_BG);
 
                                                 ui.add_space(4.0);
                                                 let stereo_on = info.channels.unwrap_or(1) >= 2;

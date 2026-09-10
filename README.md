@@ -37,7 +37,8 @@ grab the window's bottom edge or a bottom corner to resize it taller or
 shorter, and the track list fills whatever space is available. (An earlier
 version of this let the playlist tear off into its own floating window;
 that didn't work reliably, so it's parked for now — everything here is one
-window.)
+window.) The track list sits in its own recessed black panel, matching the
+LCD display's chrome, inset a few pixels from the window edges.
 
 - Drop audio files on the player window to queue them right after the
   current track and start playing the first one immediately (this also
