@@ -217,6 +217,48 @@ mod tests {
     }
 
     #[test]
+    fn remove_after_current_leaves_current_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        playlist.push(touch(dir.path(), "a.mp3"));
+        playlist.push(touch(dir.path(), "b.mp3"));
+        playlist.push(touch(dir.path(), "c.mp3"));
+        playlist.current = Some(0);
+
+        playlist.remove(2);
+
+        assert_eq!(playlist.current, Some(0));
+        assert_eq!(playlist.entries[0].display_name, "a.mp3");
+        assert_eq!(playlist.entries[1].display_name, "b.mp3");
+    }
+
+    #[test]
+    fn remove_with_no_current_track_stays_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        playlist.push(touch(dir.path(), "a.mp3"));
+        playlist.push(touch(dir.path(), "b.mp3"));
+
+        playlist.remove(0);
+
+        assert_eq!(playlist.current, None);
+        assert_eq!(playlist.entries.len(), 1);
+    }
+
+    #[test]
+    fn remove_out_of_bounds_index_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        playlist.push(touch(dir.path(), "a.mp3"));
+        playlist.current = Some(0);
+
+        playlist.remove(5);
+
+        assert_eq!(playlist.entries.len(), 1);
+        assert_eq!(playlist.current, Some(0));
+    }
+
+    #[test]
     fn m3u_round_trip_preserves_paths() {
         let dir = tempfile::tempdir().unwrap();
         let mut playlist = Playlist::new();
