@@ -244,4 +244,37 @@ mod tests {
 
         assert_eq!(loaded, vec![dir.path().join("song.mp3")]);
     }
+
+    #[test]
+    fn set_current_returns_the_path_and_updates_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        let a = touch(dir.path(), "a.mp3");
+        playlist.push(a.clone());
+        playlist.push(touch(dir.path(), "b.mp3"));
+
+        let path = playlist.set_current(0);
+
+        assert_eq!(path, Some(a));
+        assert_eq!(playlist.current, Some(0));
+    }
+
+    #[test]
+    fn set_current_out_of_bounds_index_is_a_no_op() {
+        // set_current is called from UI row-click handlers with a raw index
+        // (main.rs:690, main.rs:984) that can go stale -- e.g. a double-click
+        // dispatched after the list already shrank from a remove(). Like
+        // remove_out_of_bounds_index_is_a_no_op above, an invalid index must
+        // return None without touching the existing `current`, not panic on
+        // an out-of-bounds Vec access.
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        playlist.push(touch(dir.path(), "a.mp3"));
+        playlist.current = Some(0);
+
+        let path = playlist.set_current(5);
+
+        assert_eq!(path, None);
+        assert_eq!(playlist.current, Some(0));
+    }
 }
