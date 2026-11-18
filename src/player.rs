@@ -633,11 +633,13 @@ impl<S: Source> Source for EqTap<S> {
     }
 }
 
-/// Reads the track title from the file's metadata tag, if one is present.
+/// Reads the track title from the file's metadata tag, if one is present and
+/// not blank. lofty covers ID3v2/ID3v1 (MP3), Vorbis comments (FLAC/Ogg),
+/// MP4 atoms (M4A), APE and RIFF INFO (WAV).
 fn read_title_tag(path: &Path) -> Option<String> {
     let tagged_file = Probe::open(path).ok()?.read().ok()?;
     let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
-    let title = tag.title()?;
+    let title = tag.title().filter(|title| !title.trim().is_empty())?;
     Some(format_track_title(&title, tag.artist().as_deref()))
 }
 
@@ -761,6 +763,46 @@ mod tests {
         player.load(path).unwrap();
 
         assert_eq!(player.display_name().as_deref(), Some("silence.wav"));
+    }
+
+    fn write_tagged_wav(path: &Path, tag_type: lofty::tag::TagType, title: &str, artist: Option<&str>) {
+        use lofty::config::WriteOptions;
+        use lofty::tag::{Tag, TagExt};
+
+        write_silent_wav(path, 1.0);
+        let mut tag = Tag::new(tag_type);
+        tag.set_title(title.to_string());
+        if let Some(artist) = artist {
+            tag.set_artist(artist.to_string());
+        }
+        tag.save_to_path(path, WriteOptions::default()).unwrap();
+    }
+
+    #[test]
+    fn track_display_name_reads_an_id3v2_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tagged.wav");
+        write_tagged_wav(&path, lofty::tag::TagType::Id3v2, "Static Bloom", Some("Nightjar"));
+
+        assert_eq!(track_display_name(&path), "Nightjar - Static Bloom");
+    }
+
+    #[test]
+    fn track_display_name_reads_a_riff_info_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tagged.wav");
+        write_tagged_wav(&path, lofty::tag::TagType::RiffInfo, "Static Bloom", None);
+
+        assert_eq!(track_display_name(&path), "Static Bloom");
+    }
+
+    #[test]
+    fn track_display_name_falls_back_to_filename_for_a_blank_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blank_title.wav");
+        write_tagged_wav(&path, lofty::tag::TagType::Id3v2, "   ", Some("Nightjar"));
+
+        assert_eq!(track_display_name(&path), "blank_title.wav");
     }
 
     #[test]
