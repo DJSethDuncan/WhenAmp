@@ -256,6 +256,12 @@ impl Player {
     }
 
     pub fn load(&mut self, path: PathBuf) -> anyhow::Result<()> {
+        if crate::drm::is_drm_protected(&path) {
+            anyhow::bail!(
+                "{} is DRM-protected (iTunes FairPlay) and can't be played",
+                track_display_name(&path)
+            );
+        }
         let file = File::open(&path)?;
         let byte_len = file.metadata()?.len();
         let source = Decoder::builder()
@@ -770,6 +776,20 @@ mod tests {
         write_silent_wav(&path, 1.0);
 
         assert_eq!(track_display_name(&path), "no_tag.wav");
+    }
+
+    #[test]
+    fn load_rejects_drm_protected_m4p_with_a_clear_error() {
+        let Some(mut player) = test_player() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("protected.m4p");
+        std::fs::write(&path, crate::drm::tests::mp4_with_sample_entry(b"drms")).unwrap();
+
+        let err = player.load(path).unwrap_err().to_string();
+        assert!(err.contains("DRM-protected"), "{err}");
+        assert_eq!(player.loaded_path(), None);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod drm;
 mod player;
 mod playlist;
 
@@ -8,6 +9,9 @@ use eframe::egui;
 use egui::{Color32, Rect, Response, Sense, Stroke, Ui, Vec2};
 use player::{Player, EQ_BANDS_HZ, EQ_GAIN_RANGE_DB, NUM_EQ_BANDS, VISUALIZER_BARS};
 use playlist::Playlist;
+
+/// File types offered by the Add and Load Song dialogs.
+const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "m4a", "m4p"];
 
 // Palette lifted from the "SONIC DECK" Claude Design mockup (Graphite chrome).
 const FACE: Color32 = Color32::from_rgb(0x2a, 0x2c, 0x31);
@@ -775,7 +779,7 @@ fn playlist_body(
                     .clicked()
                 {
                     if let Some(paths) = rfd::FileDialog::new()
-                        .add_filter("Audio", &["mp3", "wav", "flac", "ogg"])
+                        .add_filter("Audio", AUDIO_EXTENSIONS)
                         .pick_files()
                     {
                         queue_tracks(playlist, paths);
@@ -1550,7 +1554,7 @@ impl eframe::App for WhenAmpApp {
                                     .clicked()
                                 {
                                     if let Some(path) = rfd::FileDialog::new()
-                                        .add_filter("Audio", &["mp3", "wav", "flac", "ogg"])
+                                        .add_filter("Audio", AUDIO_EXTENSIONS)
                                         .pick_file()
                                     {
                                         match player.load(path.clone()) {
