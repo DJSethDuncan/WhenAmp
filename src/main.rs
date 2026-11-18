@@ -669,12 +669,7 @@ fn queue_and_play_first(
     is_playing: &mut bool,
     paths: Vec<PathBuf>,
 ) {
-    let mut first_index = None;
-    for path in paths {
-        let index = playlist.insert_next(path);
-        first_index.get_or_insert(index);
-    }
-    let Some(index) = first_index else { return };
+    let Some(index) = playlist.insert_all_next(paths) else { return };
     if let Some(path) = playlist.set_current(index) {
         match player.load(path) {
             Ok(()) => {
@@ -691,9 +686,7 @@ fn queue_and_play_first(
 /// Queues each dropped path right after the current track, without
 /// changing playback — used for files dropped onto the playlist window.
 fn queue_tracks(playlist: &mut Playlist, paths: Vec<PathBuf>) {
-    for path in paths {
-        playlist.insert_next(path);
-    }
+    playlist.insert_all_next(paths);
 }
 
 /// Absolute local file paths from whatever was dropped onto this viewport
