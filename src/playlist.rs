@@ -41,6 +41,18 @@ impl Playlist {
         index
     }
 
+    /// Inserts `paths` right after the current track (or at the start if
+    /// nothing is current), keeping their order. Returns the index of the
+    /// first one inserted, or `None` if `paths` is empty.
+    pub fn insert_all_next(&mut self, paths: Vec<PathBuf>) -> Option<usize> {
+        let mut paths = paths.into_iter();
+        let first = self.insert_next(paths.next()?);
+        for (offset, path) in paths.enumerate() {
+            self.entries.insert(first + 1 + offset, Self::make_entry(path));
+        }
+        Some(first)
+    }
+
     pub fn remove(&mut self, index: usize) {
         if index >= self.entries.len() {
             return;
@@ -165,6 +177,65 @@ mod tests {
 
         assert_eq!(index, 0);
         assert_eq!(playlist.entries[0].display_name, "b.mp3");
+    }
+
+    fn names(playlist: &Playlist) -> Vec<&str> {
+        playlist.entries.iter().map(|e| e.display_name.as_str()).collect()
+    }
+
+    #[test]
+    fn insert_all_next_keeps_drop_order_after_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        playlist.push(touch(dir.path(), "a.mp3"));
+        playlist.push(touch(dir.path(), "b.mp3"));
+        playlist.current = Some(0);
+
+        let first = playlist.insert_all_next(vec![
+            touch(dir.path(), "x.mp3"),
+            touch(dir.path(), "y.mp3"),
+            touch(dir.path(), "z.mp3"),
+        ]);
+
+        assert_eq!(first, Some(1));
+        assert_eq!(names(&playlist), ["a.mp3", "x.mp3", "y.mp3", "z.mp3", "b.mp3"]);
+        assert_eq!(playlist.current, Some(0));
+    }
+
+    #[test]
+    fn insert_all_next_with_no_current_goes_to_the_front_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        playlist.push(touch(dir.path(), "a.mp3"));
+
+        let first = playlist.insert_all_next(vec![touch(dir.path(), "x.mp3"), touch(dir.path(), "y.mp3")]);
+
+        assert_eq!(first, Some(0));
+        assert_eq!(names(&playlist), ["x.mp3", "y.mp3", "a.mp3"]);
+        assert_eq!(playlist.set_current(first.unwrap()).unwrap().file_name().unwrap(), "x.mp3");
+    }
+
+    #[test]
+    fn insert_all_next_single_path_matches_insert_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        playlist.push(touch(dir.path(), "a.mp3"));
+        playlist.current = Some(0);
+
+        let first = playlist.insert_all_next(vec![touch(dir.path(), "x.mp3")]);
+
+        assert_eq!(first, Some(1));
+        assert_eq!(names(&playlist), ["a.mp3", "x.mp3"]);
+    }
+
+    #[test]
+    fn insert_all_next_with_no_paths_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut playlist = Playlist::new();
+        playlist.push(touch(dir.path(), "a.mp3"));
+
+        assert_eq!(playlist.insert_all_next(Vec::new()), None);
+        assert_eq!(names(&playlist), ["a.mp3"]);
     }
 
     #[test]
